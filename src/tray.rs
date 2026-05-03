@@ -1,0 +1,110 @@
+use std::mem::size_of;
+use std::ptr::{null, null_mut};
+
+use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Shell::{
+    Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, LoadIconW, PostMessageW, SetForegroundWindow,
+    TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+use crate::win;
+
+pub const WM_TRAYICON: u32 = WM_APP + 1;
+pub const ID_TRAY_SETTINGS: usize = 1001;
+pub const ID_TRAY_EXIT: usize = 1002;
+
+const TRAY_UID: u32 = 1;
+
+pub fn add(hwnd: HWND) {
+    let mut data = notify_data(hwnd);
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    data.uCallbackMessage = WM_TRAYICON;
+    data.hIcon = load_app_icon();
+
+    let tip = win::to_wide("GMTL Mouse Click");
+    for (index, value) in tip.iter().take(data.szTip.len()).enumerate() {
+        data.szTip[index] = *value;
+    }
+
+    unsafe {
+        Shell_NotifyIconW(NIM_ADD, &mut data);
+    }
+}
+
+fn load_app_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+    let instance = unsafe { GetModuleHandleW(null()) };
+    let icon = unsafe { LoadIconW(instance, win::resource_id(win::APP_ICON_ID)) };
+    if icon.is_null() {
+        unsafe { LoadIconW(null_mut(), IDI_APPLICATION) }
+    } else {
+        icon
+    }
+}
+
+pub fn remove(hwnd: HWND) {
+    let mut data = notify_data(hwnd);
+    unsafe {
+        Shell_NotifyIconW(NIM_DELETE, &mut data);
+    }
+}
+
+pub fn is_activate_message(message: isize) -> bool {
+    message as u32 == WM_RBUTTONUP || message as u32 == WM_LBUTTONUP
+}
+
+pub fn show_menu(hwnd: HWND) {
+    let menu = unsafe { CreatePopupMenu() };
+    if menu.is_null() {
+        return;
+    }
+
+    let settings = win::to_wide("설정...");
+    let exit = win::to_wide("종료");
+
+    unsafe {
+        AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settings.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exit.as_ptr());
+
+        let mut point = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut point);
+        SetForegroundWindow(hwnd);
+
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            null_mut(),
+        );
+
+        if command != 0 {
+            PostMessageW(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_COMMAND,
+                command as usize,
+                0,
+            );
+        }
+
+        DestroyMenu(menu);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+    }
+}
+
+fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
+    NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_UID,
+        ..unsafe { std::mem::zeroed() }
+    }
+}
