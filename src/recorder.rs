@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::SIZE;
 use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, DeleteDC, DeleteObject, GetDC,
     GetDIBits, GetStockObject, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode,
     SetTextColor, TextOutW, BITMAPINFO, BITMAPINFOHEADER, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HDC,
     SRCCOPY,
@@ -17,7 +17,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DrawIcon, GetCursorInfo, CURSORINFO, CURSOR_SHOWING,
 };
 
+use crate::config::{MAX_GIF_TIMESTAMP_FONT_SIZE, MIN_GIF_TIMESTAMP_FONT_SIZE};
 use crate::win;
+
+const FW_NORMAL: i32 = 400;
+const DEFAULT_CHARSET: u32 = 1;
+const OUT_DEFAULT_PRECIS: u32 = 0;
+const CLIP_DEFAULT_PRECIS: u32 = 0;
+const DEFAULT_QUALITY: u32 = 0;
+const FIXED_PITCH: u32 = 1;
+const FF_MODERN: u32 = 0x30;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -30,7 +39,12 @@ pub struct CaptureRegion {
     pub height: i32,
 }
 
-pub fn start(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool) {
+pub fn start(
+    region: CaptureRegion,
+    output_path: PathBuf,
+    show_timestamp: bool,
+    timestamp_font_size: i32,
+) {
     if RECORDING.swap(true, Ordering::SeqCst) {
         return; // 이미 녹화 중
     }
@@ -38,7 +52,7 @@ pub fn start(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool) 
     *LAST_OUTPUT.lock().expect("recorder mutex poisoned") = output_path.clone();
 
     thread::spawn(move || {
-        record_loop(region, output_path, show_timestamp);
+        record_loop(region, output_path, show_timestamp, timestamp_font_size);
         RECORDING.store(false, Ordering::Relaxed);
     });
 }
@@ -55,7 +69,12 @@ pub fn last_output_path() -> PathBuf {
     LAST_OUTPUT.lock().expect("recorder mutex poisoned").clone()
 }
 
-fn record_loop(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool) {
+fn record_loop(
+    region: CaptureRegion,
+    output_path: PathBuf,
+    show_timestamp: bool,
+    timestamp_font_size: i32,
+) {
     let file = match File::create(&output_path) {
         Ok(f) => f,
         Err(_) => return,
@@ -72,6 +91,10 @@ fn record_loop(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool
 
     let frame_interval = Duration::from_millis(100); // 10 FPS
     let recording_start = Instant::now();
+    let timestamp_font_size = timestamp_font_size.clamp(
+        MIN_GIF_TIMESTAMP_FONT_SIZE,
+        MAX_GIF_TIMESTAMP_FONT_SIZE,
+    );
 
     loop {
         if STOP_SIGNAL.load(Ordering::Relaxed) {
@@ -87,6 +110,7 @@ fn record_loop(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool
             region.width,
             region.height,
             timestamp.as_deref(),
+            timestamp_font_size,
         ) {
             // GetDIBits는 BGRA 순서 → RGB로 변환
             let rgb: Vec<u8> = bgra
@@ -118,6 +142,7 @@ fn capture_region(
     width: i32,
     height: i32,
     timestamp: Option<&str>,
+    timestamp_font_size: i32,
 ) -> Option<Vec<u8>> {
     if width <= 0 || height <= 0 {
         return None;
@@ -157,7 +182,7 @@ fn capture_region(
         }
 
         if let Some(text) = timestamp {
-            draw_timestamp(mem_dc, width, height, text);
+            draw_timestamp(mem_dc, width, height, text, timestamp_font_size);
         }
 
         let mut bmi: BITMAPINFO = std::mem::zeroed();
@@ -196,14 +221,36 @@ fn format_elapsed(elapsed: Duration) -> String {
     format!("{:02}:{:02}.{}", minutes, seconds, tenths)
 }
 
-unsafe fn draw_timestamp(hdc: HDC, width: i32, height: i32, text: &str) {
+unsafe fn draw_timestamp(hdc: HDC, width: i32, height: i32, text: &str, font_size: i32) {
     if width <= 0 || height <= 0 {
         return;
     }
 
     let text_w = win::to_wide(text);
     let text_len = (text_w.len() - 1) as i32;
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let face = win::to_wide("Terminal");
+    let font_size = font_size.clamp(MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE);
+    let created_font = CreateFontW(
+        -font_size,
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        FIXED_PITCH | FF_MODERN,
+        face.as_ptr(),
+    );
+    let font = if created_font.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT)
+    } else {
+        created_font
+    };
     let old_font = SelectObject(hdc, font);
     SetBkMode(hdc, 1);
 
@@ -220,4 +267,7 @@ unsafe fn draw_timestamp(hdc: HDC, width: i32, height: i32, text: &str) {
     TextOutW(hdc, x, y, text_w.as_ptr(), text_len);
 
     SelectObject(hdc, old_font);
+    if !created_font.is_null() {
+        DeleteObject(created_font);
+    }
 }

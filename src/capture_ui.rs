@@ -23,7 +23,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, IDC_SIZENS, IDC_SIZEWE, IDC_SIZENWSE, IDC_SIZENESW,
     KillTimer, LoadCursorW, RegisterClassExW, SendMessageW, SetCursor,
     SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
-    SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SW_SHOWDEFAULT,
+    SM_CXSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SW_SHOW, SW_SHOWDEFAULT,
     SWP_NOACTIVATE, SWP_NOZORDER,
     WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCHITTEST,
@@ -45,8 +46,7 @@ const CBN_SELCHANGE:    i32 = 1;
 // ── 레이아웃 상수 ─────────────────────────────────────────────────────────
 const CLASS_NAME:  &str = "GMTLCaptureUI";
 
-const BAR_H:       i32 = 32;  // 가로 바 높이 / 세로 바 너비
-const BAR_W_VERT:  i32 = 90;  // 세로 바(Left/Right)의 너비
+const BAR_H:       i32 = 32;  // 바 높이
 const BORDER:      i32 = 4;   // 캡처 프레임 테두리 두께
 const SHADOW:      i32 = 0;   // 프레임 외부 그림자 없음
 const HANDLE:      i32 = 10;  // 리사이즈 핸들 감지 반경
@@ -68,7 +68,7 @@ const BTN_H: i32 = 26;
 // ── 타입 정의 ────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum BarPos { Top, Right, Bottom, Left }
+enum BarPos { Top, Bottom }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag { None, N, S, E, W, NW, NE, SW, SE }
@@ -121,20 +121,6 @@ fn compute_geom(sel_w: i32, sel_h: i32, bar_pos: BarPos) -> WinGeom {
             bar_r: sel_w + 2 * SHADOW, bar_b: SHADOW + sel_h + BAR_H,
             fx: SHADOW, fy: SHADOW,
         },
-        BarPos::Left => WinGeom {
-            win_w: BAR_W_VERT + sel_w + SHADOW,
-            win_h: sel_h + 2 * SHADOW,
-            bar_l: 0,     bar_t: 0,
-            bar_r: BAR_W_VERT, bar_b: sel_h + 2 * SHADOW,
-            fx: BAR_W_VERT, fy: SHADOW,
-        },
-        BarPos::Right => WinGeom {
-            win_w: SHADOW + sel_w + BAR_W_VERT,
-            win_h: sel_h + 2 * SHADOW,
-            bar_l: SHADOW + sel_w, bar_t: 0,
-            bar_r: SHADOW + sel_w + BAR_W_VERT, bar_b: sel_h + 2 * SHADOW,
-            fx: SHADOW, fy: SHADOW,
-        },
     }
 }
 
@@ -142,8 +128,6 @@ fn win_pos(sel: &RECT, bar_pos: BarPos) -> (i32, i32) {
     match bar_pos {
         BarPos::Top    => (sel.left - SHADOW, sel.top - BAR_H),
         BarPos::Bottom => (sel.left - SHADOW, sel.top - SHADOW),
-        BarPos::Left   => (sel.left - BAR_W_VERT, sel.top - SHADOW),
-        BarPos::Right  => (sel.left - SHADOW, sel.top - SHADOW),
     }
 }
 
@@ -293,6 +277,9 @@ unsafe extern "system" fn capture_proc(
                 s.sel.bottom = s.sel.top  + h;
             }
             drop(g);
+            if auto_adjust_bar_pos() {
+                reposition_window(hwnd);
+            }
             0
         }
         WM_PAINT => { paint(hwnd); 0 }
@@ -379,72 +366,40 @@ unsafe fn create_controls(hwnd: HWND) {
 
     let (toggle_btn, cancel_btn, bar_pos_ctrl, preset_ctrl, ratio_ctrl);
 
-    match bar_pos {
-        BarPos::Top | BarPos::Bottom => {
-            let by = geom.bar_t;
-            let bty = by + (BAR_H - BTN_H) / 2;
-            let bcy = by + (BAR_H - 22) / 2;
-            let win_w = geom.win_w;
+    let by = geom.bar_t;
+    let bty = by + (BAR_H - BTN_H) / 2;
+    let bcy = by + (BAR_H - 22) / 2;
+    let win_w = geom.win_w;
 
-            let cx_cancel  = win_w - 4 - BTN_W;
-            let cx_toggle  = cx_cancel - 4 - BTN_W;
-            let cx_barpos  = cx_toggle - 4 - 65;
-            let cx_ratio   = cx_barpos - 4 - 65;
-            let cx_preset  = cx_ratio  - 4 - 85;
+    let cx_cancel  = win_w - 4 - BTN_W;
+    let cx_toggle  = cx_cancel - 4 - BTN_W;
+    let cx_barpos  = cx_toggle - 4 - 65;
+    let cx_ratio   = cx_barpos - 4 - 65;
+    let cx_preset  = cx_ratio  - 4 - 85;
 
-            cancel_btn   = make_btn(ID_CANCEL, "✕",  cx_cancel,  bty, BTN_W, BTN_H);
-            toggle_btn   = make_btn(ID_TOGGLE, "●",  cx_toggle,  bty, BTN_W, BTN_H);
+    cancel_btn   = make_btn(ID_CANCEL, "✕",  cx_cancel,  bty, BTN_W, BTN_H);
+    toggle_btn   = make_btn(ID_TOGGLE, "●",  cx_toggle,  bty, BTN_W, BTN_H);
 
-            bar_pos_ctrl = make_combo(ID_BAR_POS,      cx_barpos, bcy, 65, 22);
-            ratio_ctrl   = make_combo(ID_RATIO_COMBO,  cx_ratio,  bcy, 65, 22);
-            preset_ctrl  = make_combo(ID_PRESET_COMBO, cx_preset, bcy, 85, 22);
+    bar_pos_ctrl = make_combo(ID_BAR_POS,      cx_barpos, bcy, 65, 22);
+    ratio_ctrl   = make_combo(ID_RATIO_COMBO,  cx_ratio,  bcy, 65, 22);
+    preset_ctrl  = make_combo(ID_PRESET_COMBO, cx_preset, bcy, 85, 22);
 
-            add_str(bar_pos_ctrl, "위"); add_str(bar_pos_ctrl, "오른쪽");
-            add_str(bar_pos_ctrl, "아래"); add_str(bar_pos_ctrl, "왼쪽");
-            let bp_idx = match bar_pos { BarPos::Top => 0, BarPos::Right => 1,
-                                         BarPos::Bottom => 2, BarPos::Left => 3 };
-            SendMessageW(bar_pos_ctrl as HWND, CB_SETCURSEL, bp_idx, 0);
+    add_str(bar_pos_ctrl, "위");
+    add_str(bar_pos_ctrl, "아래");
+    let bp_idx = match bar_pos { BarPos::Top => 0, BarPos::Bottom => 1 };
+    SendMessageW(bar_pos_ctrl as HWND, CB_SETCURSEL, bp_idx, 0);
 
-            for s in ["자유","1:1","4:3","16:9","9:16"] { add_str(ratio_ctrl, s); }
-            let ratio_idx = match aspect {
-                None          => 0, Some((1,1)) => 1, Some((4,3)) => 2,
-                Some((16,9))  => 3, Some((9,16)) => 4, _          => 0,
-            };
-            SendMessageW(ratio_ctrl as HWND, CB_SETCURSEL, ratio_idx, 0);
+    for s in ["자유","1:1","4:3","16:9","9:16"] { add_str(ratio_ctrl, s); }
+    let ratio_idx = match aspect {
+        None          => 0, Some((1,1)) => 1, Some((4,3)) => 2,
+        Some((16,9))  => 3, Some((9,16)) => 4, _          => 0,
+    };
+    SendMessageW(ratio_ctrl as HWND, CB_SETCURSEL, ratio_idx, 0);
 
-            for s in ["크기","640x480","1280x720","1920x1080","1024x768","800x600"] {
-                add_str(preset_ctrl, s);
-            }
-            SendMessageW(preset_ctrl as HWND, CB_SETCURSEL, 0, 0);
-        }
-        BarPos::Left | BarPos::Right => {
-            let bx = geom.bar_l;
-
-            bar_pos_ctrl = make_combo(ID_BAR_POS, bx + 5, 4, 80, 22);
-            add_str(bar_pos_ctrl, "위"); add_str(bar_pos_ctrl, "오른쪽");
-            add_str(bar_pos_ctrl, "아래"); add_str(bar_pos_ctrl, "왼쪽");
-            let bp_idx = match bar_pos { BarPos::Top => 0, BarPos::Right => 1,
-                                         BarPos::Bottom => 2, BarPos::Left => 3 };
-            SendMessageW(bar_pos_ctrl as HWND, CB_SETCURSEL, bp_idx, 0);
-
-            preset_ctrl = make_combo(ID_PRESET_COMBO, bx + 5, 28, 80, 22);
-            for s in ["크기","640x480","1280x720","1920x1080","1024x768","800x600"] {
-                add_str(preset_ctrl, s);
-            }
-            SendMessageW(preset_ctrl as HWND, CB_SETCURSEL, 0, 0);
-
-            ratio_ctrl = make_combo(ID_RATIO_COMBO, bx + 5, 52, 80, 22);
-            for s in ["자유","1:1","4:3","16:9","9:16"] { add_str(ratio_ctrl, s); }
-            let ratio_idx = match aspect {
-                None          => 0, Some((1,1)) => 1, Some((4,3)) => 2,
-                Some((16,9))  => 3, Some((9,16)) => 4, _          => 0,
-            };
-            SendMessageW(ratio_ctrl as HWND, CB_SETCURSEL, ratio_idx, 0);
-
-            toggle_btn = make_btn(ID_TOGGLE, "●", bx + 5, 76, 38, BTN_H);
-            cancel_btn = make_btn(ID_CANCEL, "✕", bx + 47, 76, 38, BTN_H);
-        }
+    for s in ["크기","640x480","1280x720","1920x1080","1024x768","800x600"] {
+        add_str(preset_ctrl, s);
     }
+    SendMessageW(preset_ctrl as HWND, CB_SETCURSEL, 0, 0);
 
     if is_recording {
         let tw = win::to_wide("■");
@@ -497,38 +452,28 @@ unsafe fn update_ctrl_positions(hwnd: HWND) {
          s.preset_ctrl as HWND, s.ratio_ctrl as HWND)
     };
 
-    match bar_pos {
-        BarPos::Top | BarPos::Bottom => {
-            let geom = compute_geom(sel_w, sel_h, bar_pos);
-            let by   = geom.bar_t;
-            let bty  = by + (BAR_H - BTN_H) / 2;
-            let bcy  = by + (BAR_H - 22) / 2;
-            let ww   = geom.win_w;
+    let geom = compute_geom(sel_w, sel_h, bar_pos);
+    let by   = geom.bar_t;
+    let bty  = by + (BAR_H - BTN_H) / 2;
+    let bcy  = by + (BAR_H - 22) / 2;
+    let ww   = geom.win_w;
 
-            let cx_cancel = ww - 4 - BTN_W;
-            let cx_toggle = cx_cancel - 4 - BTN_W;
-            let cx_barpos = cx_toggle - 4 - 65;
-            let cx_ratio  = cx_barpos - 4 - 65;
-            let cx_preset = cx_ratio  - 4 - 85;
+    let cx_cancel = ww - 4 - BTN_W;
+    let cx_toggle = cx_cancel - 4 - BTN_W;
+    let cx_barpos = cx_toggle - 4 - 65;
+    let cx_ratio  = cx_barpos - 4 - 65;
+    let cx_preset = cx_ratio  - 4 - 85;
 
-            let fl = SWP_NOZORDER | SWP_NOACTIVATE;
-            if !c.is_null() { SetWindowPos(c, null_mut(), cx_cancel, bty, BTN_W, BTN_H, fl); }
-            if !t.is_null() { SetWindowPos(t, null_mut(), cx_toggle, bty, BTN_W, BTN_H, fl); }
-            if !b.is_null() { SetWindowPos(b, null_mut(), cx_barpos, bcy, 65, 22, fl); }
-            if !r.is_null() { SetWindowPos(r, null_mut(), cx_ratio,  bcy, 65, 22, fl); }
-            if !p.is_null() { SetWindowPos(p, null_mut(), cx_preset, bcy, 85, 22, fl); }
-        }
-        BarPos::Left | BarPos::Right => {
-            let geom = compute_geom(sel_w, sel_h, bar_pos);
-            let bx = geom.bar_l;
-            let fl = SWP_NOZORDER | SWP_NOACTIVATE;
-            if !b.is_null() { SetWindowPos(b, null_mut(), bx + 5, 4, 80, 22, fl); }
-            if !p.is_null() { SetWindowPos(p, null_mut(), bx + 5, 28, 80, 22, fl); }
-            if !r.is_null() { SetWindowPos(r, null_mut(), bx + 5, 52, 80, 22, fl); }
-            if !t.is_null() { SetWindowPos(t, null_mut(), bx + 5, 76, 38, BTN_H, fl); }
-            if !c.is_null() { SetWindowPos(c, null_mut(), bx + 47, 76, 38, BTN_H, fl); }
-        }
+    let fl = SWP_NOZORDER | SWP_NOACTIVATE;
+    if !b.is_null() {
+        let bp_idx = match bar_pos { BarPos::Top => 0, BarPos::Bottom => 1 };
+        SendMessageW(b, CB_SETCURSEL, bp_idx, 0);
     }
+    if !c.is_null() { SetWindowPos(c, null_mut(), cx_cancel, bty, BTN_W, BTN_H, fl); }
+    if !t.is_null() { SetWindowPos(t, null_mut(), cx_toggle, bty, BTN_W, BTN_H, fl); }
+    if !b.is_null() { SetWindowPos(b, null_mut(), cx_barpos, bcy, 65, 22, fl); }
+    if !r.is_null() { SetWindowPos(r, null_mut(), cx_ratio,  bcy, 65, 22, fl); }
+    if !p.is_null() { SetWindowPos(p, null_mut(), cx_preset, bcy, 85, 22, fl); }
     _ = hwnd;
 }
 
@@ -547,8 +492,6 @@ unsafe fn apply_region(hwnd: HWND) {
     let (fo_l, fo_t, fo_r, fo_b) = match bar_pos {
         BarPos::Top    => (0, geom.bar_b, geom.win_w, geom.win_h),
         BarPos::Bottom => (0, 0, geom.win_w, geom.bar_t),
-        BarPos::Left   => (geom.bar_r, 0, geom.win_w, geom.win_h),
-        BarPos::Right  => (0, 0, geom.bar_l, geom.win_h),
     };
     let frame_outer = CreateRectRgn(fo_l, fo_t, fo_r, fo_b);
 
@@ -591,19 +534,10 @@ unsafe fn paint(hwnd: HWND) {
     SetTextColor(hdc, win::colorref(180, 180, 180));
     let font = GetStockObject(DEFAULT_GUI_FONT);
     let old_font = SelectObject(hdc, font);
-    let cap_w = (sel_w - BORDER * 2).max(0);
-    let cap_h = (sel_h - BORDER * 2).max(0);
+    let (cap_w, cap_h) = capture_size_from_frame(sel_w, sel_h);
     let size_text = win::to_wide(&format!("{}×{}", cap_w, cap_h));
-    match bar_pos {
-        BarPos::Top | BarPos::Bottom => {
-            TextOutW(hdc, geom.bar_l + 6, geom.bar_t + 8,
-                     size_text.as_ptr(), (size_text.len() - 1) as i32);
-        }
-        BarPos::Left | BarPos::Right => {
-            TextOutW(hdc, geom.bar_l + 5, geom.bar_b - 20,
-                     size_text.as_ptr(), (size_text.len() - 1) as i32);
-        }
-    }
+    TextOutW(hdc, geom.bar_l + 6, geom.bar_t + 8,
+             size_text.as_ptr(), (size_text.len() - 1) as i32);
     SelectObject(hdc, old_font);
 
     let fx = geom.fx; let fy = geom.fy;
@@ -829,14 +763,22 @@ unsafe fn on_record(hwnd: HWND) {
     let output_dir = std::path::PathBuf::from(&config.gif_output_path);
     let _ = std::fs::create_dir_all(&output_dir);
     let output_path = output_dir.join(&filename);
+    let frame_w = sel.right - sel.left;
+    let frame_h = sel.bottom - sel.top;
+    let (cap_w, cap_h) = capture_size_from_frame(frame_w, frame_h);
 
     let region = crate::recorder::CaptureRegion {
         x:      sel.left   + BORDER,
         y:      sel.top    + BORDER,
-        width:  (sel.right  - sel.left - BORDER * 2).max(1),
-        height: (sel.bottom - sel.top  - BORDER * 2).max(1),
+        width:  cap_w,
+        height: cap_h,
     };
-    crate::recorder::start(region, output_path, config.show_gif_timestamp);
+    crate::recorder::start(
+        region,
+        output_path,
+        config.show_gif_timestamp,
+        config.gif_timestamp_font_size,
+    );
 
     let (tb, cb) = {
         let g = STATE.lock().expect("capture mutex poisoned");
@@ -898,15 +840,16 @@ unsafe fn on_preset_changed(hwnd: HWND) {
         2 | 3     => (Some((16, 9)), 3),
         _         => (None, 0),
     };
+    let (frame_w, frame_h) = frame_size_from_capture(pw, ph);
     let ratio_ctrl_h = {
         let mut g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_mut() { Some(s) => s, None => return };
         let cx = (s.sel.left + s.sel.right)  / 2;
         let cy = (s.sel.top  + s.sel.bottom) / 2;
-        s.sel.left   = cx - pw / 2;
-        s.sel.right  = cx + pw / 2;
-        s.sel.top    = cy - ph / 2;
-        s.sel.bottom = cy + ph / 2;
+        s.sel.left   = cx - frame_w / 2;
+        s.sel.right  = s.sel.left + frame_w;
+        s.sel.top    = cy - frame_h / 2;
+        s.sel.bottom = s.sel.top + frame_h;
         s.aspect = new_aspect;
         s.ratio_ctrl as HWND
     };
@@ -934,8 +877,11 @@ unsafe fn on_ratio_changed(hwnd: HWND) {
         s.aspect = aspect;
 
         if let Some((rw, rh)) = aspect {
-            let h = (s.sel.bottom - s.sel.top).max(MIN_SEL_H);
-            let new_w = (h * rw / rh).max(MIN_SEL_W);
+            let frame_h = (s.sel.bottom - s.sel.top).max(MIN_SEL_H);
+            let (_, cap_h) = capture_size_from_frame(s.sel.right - s.sel.left, frame_h);
+            let min_cap_w = (MIN_SEL_W - BORDER * 2).max(1);
+            let new_cap_w = (cap_h * rw / rh).max(min_cap_w);
+            let (new_w, _) = frame_size_from_capture(new_cap_w, cap_h);
             let cx = (s.sel.left + s.sel.right) / 2;
             s.sel.left = cx - new_w / 2;
             s.sel.right = s.sel.left + new_w;
@@ -952,8 +898,8 @@ unsafe fn on_bar_pos_changed(hwnd: HWND) {
     let ctrl = match ctrl { Some(c) => c, None => return };
     let idx = SendMessageW(ctrl, CB_GETCURSEL, 0, 0) as i64;
     let new_pos = match idx {
-        0 => BarPos::Top, 1 => BarPos::Right,
-        2 => BarPos::Bottom, _ => BarPos::Left,
+        0 => BarPos::Top,
+        _ => BarPos::Bottom,
     };
     {
         let mut g = STATE.lock().expect("capture mutex poisoned");
@@ -963,6 +909,7 @@ unsafe fn on_bar_pos_changed(hwnd: HWND) {
 }
 
 unsafe fn reposition_window(hwnd: HWND) {
+    auto_adjust_bar_pos();
     let (sel, bar_pos) = {
         let g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_ref() { Some(s) => s, None => return };
@@ -981,6 +928,7 @@ unsafe fn reposition_window(hwnd: HWND) {
 }
 
 unsafe fn refresh_capture_window(hwnd: HWND) {
+    auto_adjust_bar_pos();
     let (sel, bar_pos) = {
         let g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_ref() { Some(s) => s, None => return };
@@ -996,6 +944,26 @@ unsafe fn refresh_capture_window(hwnd: HWND) {
     apply_region(hwnd);
     InvalidateRect(hwnd, null(), 1);
     UpdateWindow(hwnd);
+}
+
+fn auto_adjust_bar_pos() -> bool {
+    let mut g = STATE.lock().expect("capture mutex poisoned");
+    let Some(s) = g.as_mut() else { return false };
+
+    let screen_top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    let screen_bottom = screen_top + unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+    let sel_h = s.sel.bottom - s.sel.top;
+    let old_pos = s.bar_pos;
+    let top_over = s.sel.top - BAR_H < screen_top;
+    let bottom_over = s.sel.top + sel_h + BAR_H > screen_bottom;
+
+    s.bar_pos = match s.bar_pos {
+        BarPos::Top if top_over && !bottom_over => BarPos::Bottom,
+        BarPos::Bottom if bottom_over && !top_over => BarPos::Top,
+        pos => pos,
+    };
+
+    s.bar_pos != old_pos
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1058,4 +1026,18 @@ fn read_sel_dims_pos() -> (i32, i32, BarPos) {
         Some(s) => (s.sel.right - s.sel.left, s.sel.bottom - s.sel.top, s.bar_pos),
         None    => (MIN_SEL_W, MIN_SEL_H, BarPos::Top),
     }
+}
+
+fn capture_size_from_frame(frame_w: i32, frame_h: i32) -> (i32, i32) {
+    (
+        (frame_w - BORDER * 2).max(1),
+        (frame_h - BORDER * 2).max(1),
+    )
+}
+
+fn frame_size_from_capture(cap_w: i32, cap_h: i32) -> (i32, i32) {
+    (
+        (cap_w + BORDER * 2).max(MIN_SEL_W),
+        (cap_h + BORDER * 2).max(MIN_SEL_H),
+    )
 }

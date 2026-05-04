@@ -30,7 +30,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::config::{
     AppConfig, ClickColor,
+    MAX_GIF_TIMESTAMP_FONT_SIZE,
     MAX_RIPPLE_LIFETIME, MAX_RIPPLE_RADIUS,
+    MIN_GIF_TIMESTAMP_FONT_SIZE,
     MIN_RIPPLE_LIFETIME, MIN_RIPPLE_RADIUS,
 };
 use crate::win;
@@ -47,6 +49,7 @@ const ID_APPLY: i32 = 2008;
 const ID_GIF_PATH: i32 = 2010;
 const ID_GIF_OPEN_FOLDER: i32 = 2011;
 const ID_GIF_TIMESTAMP: i32 = 2012;
+const ID_GIF_TIMESTAMP_SIZE: i32 = 2013;
 const ID_RIPPLE_SPEED: i32 = 2014;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
@@ -320,6 +323,12 @@ unsafe fn sync_current_page(hwnd: HWND) {
                     IsDlgButtonChecked(hwnd, ID_GIF_OPEN_FOLDER) == BST_CHECKED;
                 config.show_gif_timestamp =
                     IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
+                if let Ok(size) = control_text(hwnd, ID_GIF_TIMESTAMP_SIZE).trim().parse::<i32>() {
+                    config.gif_timestamp_font_size = size.clamp(
+                        MIN_GIF_TIMESTAMP_FONT_SIZE,
+                        MAX_GIF_TIMESTAMP_FONT_SIZE,
+                    );
+                }
             }
             PAGE_MOUSE => {
                 if let Ok(radius) = control_text(hwnd, ID_RIPPLE_RADIUS).trim().parse::<i32>() {
@@ -379,6 +388,17 @@ unsafe fn create_general_page(hwnd: HWND) {
         if config.show_gif_timestamp { BST_CHECKED } else { BST_UNCHECKED },
     );
     remember_content(timestamp_cb);
+
+    content_label(hwnd, "경과시간 글자 크기 (8-24)", 42, 308, 220, 24);
+    content_edit(
+        hwnd,
+        ID_GIF_TIMESTAMP_SIZE,
+        &config.gif_timestamp_font_size.to_string(),
+        512,
+        304,
+        40,
+        24,
+    );
 }
 
 unsafe fn create_mouse_page(hwnd: HWND) {

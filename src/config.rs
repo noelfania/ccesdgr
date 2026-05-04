@@ -13,6 +13,9 @@ pub const MAX_RIPPLE_RADIUS: i32 = 240;
 pub const DEFAULT_RIPPLE_LIFETIME: u32 = 28;
 pub const MIN_RIPPLE_LIFETIME: u32 = 10;
 pub const MAX_RIPPLE_LIFETIME: u32 = 60;
+pub const DEFAULT_GIF_TIMESTAMP_FONT_SIZE: i32 = 14;
+pub const MIN_GIF_TIMESTAMP_FONT_SIZE: i32 = 8;
+pub const MAX_GIF_TIMESTAMP_FONT_SIZE: i32 = 24;
 
 
 pub fn default_gif_output_path() -> String {
@@ -75,6 +78,8 @@ pub struct AppConfig {
     pub open_folder_after_save: bool,
     #[serde(default)]
     pub show_gif_timestamp: bool,
+    #[serde(default = "default_gif_timestamp_font_size")]
+    pub gif_timestamp_font_size: i32,
     #[serde(default)]
     pub recent_left_colors: Vec<ClickColor>,
     #[serde(default)]
@@ -93,6 +98,7 @@ impl Default for AppConfig {
             gif_output_path: default_gif_output_path(),
             open_folder_after_save: false,
             show_gif_timestamp: false,
+            gif_timestamp_font_size: DEFAULT_GIF_TIMESTAMP_FONT_SIZE,
             recent_left_colors: Vec::new(),
             recent_right_colors: Vec::new(),
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
@@ -131,6 +137,9 @@ impl AppConfig {
         self.ripple_lifetime = self
             .ripple_lifetime
             .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME);
+        self.gif_timestamp_font_size = self
+            .gif_timestamp_font_size
+            .clamp(MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE);
         // 최근 색상 목록 최대 3개로 제한
         self.recent_left_colors.truncate(3);
         self.recent_right_colors.truncate(3);
@@ -143,6 +152,10 @@ fn default_ripple_radius() -> i32 {
 
 fn default_ripple_lifetime() -> u32 {
     DEFAULT_RIPPLE_LIFETIME
+}
+
+fn default_gif_timestamp_font_size() -> i32 {
+    DEFAULT_GIF_TIMESTAMP_FONT_SIZE
 }
 
 pub fn config_path() -> PathBuf {
