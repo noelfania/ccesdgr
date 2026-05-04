@@ -18,6 +18,7 @@ use crate::win;
 pub const WM_TRAYICON: u32 = WM_APP + 1;
 pub const ID_TRAY_SETTINGS: usize = 1001;
 pub const ID_TRAY_EXIT: usize = 1002;
+pub const ID_TRAY_RECORD: usize = 1003;
 
 const TRAY_UID: u32 = 1;
 
@@ -65,10 +66,16 @@ pub fn show_menu(hwnd: HWND) {
     }
 
     let settings = win::to_wide("설정...");
+    let record_label = if crate::recorder::is_recording() {
+        win::to_wide("GIF 녹화 중지")
+    } else {
+        win::to_wide("GIF 녹화...")
+    };
     let exit = win::to_wide("종료");
 
     unsafe {
         AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settings.as_ptr());
+        AppendMenuW(menu, MF_STRING, ID_TRAY_RECORD, record_label.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exit.as_ptr());
 

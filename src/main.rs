@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
+mod capture_ui;
 mod config;
 mod effect;
+mod recorder;
 mod settings;
 mod startup;
 mod tray;
@@ -176,6 +178,7 @@ unsafe extern "system" fn main_proc(
         WM_COMMAND => {
             match wparam & 0xffff {
                 tray::ID_TRAY_SETTINGS => open_settings(hwnd),
+                tray::ID_TRAY_RECORD => open_record(hwnd),
                 tray::ID_TRAY_EXIT => {
                     DestroyWindow(hwnd);
                 }
@@ -250,17 +253,21 @@ unsafe fn handle_mouse_click(lparam: LPARAM) {
         state.config.right_click_color
     };
 
+    let lifetime = state.config.ripple_lifetime;
     match click.phase {
-        MousePhase::Down => {
-            effect::press_down(state.effect_hwnd as HWND, click.x, click.y, click.button, color)
-        }
+        MousePhase::Down => effect::press_down(
+            state.effect_hwnd as HWND,
+            click.x, click.y,
+            click.button,
+            color,
+        ),
         MousePhase::Up => effect::press_up(
             state.effect_hwnd as HWND,
-            click.x,
-            click.y,
+            click.x, click.y,
             click.button,
             color,
             state.config.ripple_radius,
+            lifetime,
         ),
     }
 }
@@ -273,8 +280,23 @@ unsafe fn open_settings(hwnd: HWND) {
     settings::show(hwnd, &config);
 }
 
+unsafe fn open_record(hwnd: HWND) {
+    // 녹화 중이면 중지
+    if recorder::is_recording() {
+        recorder::stop();
+        return;
+    }
+    let Some(state) = APP_STATE.get() else {
+        return;
+    };
+    let config = state.lock().expect("app state mutex poisoned").config.clone();
+    capture_ui::show(hwnd, config);
+}
+
 unsafe fn cleanup(hwnd: HWND) {
     tray::remove(hwnd);
+    capture_ui::close();
+    recorder::stop();
     MAIN_HWND.store(0, Ordering::Relaxed);
 
     if let Some(state) = APP_STATE.get() {

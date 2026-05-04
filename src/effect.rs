@@ -23,7 +23,6 @@ use crate::win;
 const CLASS_NAME: &str = "GMTLMouseClickEffectWindow";
 const TIMER_ID: usize = 1;
 const TIMER_INTERVAL_MS: u32 = 16;
-const RIPPLE_LIFETIME: u32 = 28;
 const PRESS_RADIUS: i32 = 8;
 
 static RIPPLES: Mutex<Vec<Ripple>> = Mutex::new(Vec::new());
@@ -37,6 +36,7 @@ struct Ripple {
     start_radius: i32,
     max_radius: i32,
     color: ClickColor,
+    lifetime: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +97,13 @@ pub fn create_window() -> HWND {
     hwnd
 }
 
-pub fn press_down(hwnd: HWND, x: i32, y: i32, button: usize, color: ClickColor) {
+pub fn press_down(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    button: usize,
+    color: ClickColor,
+) {
     if hwnd.is_null() {
         return;
     }
@@ -105,12 +111,7 @@ pub fn press_down(hwnd: HWND, x: i32, y: i32, button: usize, color: ClickColor) 
     {
         let mut presses = PRESSES.lock().expect("effect mutex poisoned");
         presses.retain(|press| press.button != button);
-        presses.push(Press {
-            x,
-            y,
-            button,
-            color,
-        });
+        presses.push(Press { x, y, button, color });
     }
 
     unsafe {
@@ -128,6 +129,7 @@ pub fn press_up(
     button: usize,
     color: ClickColor,
     max_radius: i32,
+    lifetime: u32,
 ) {
     if hwnd.is_null() {
         return;
@@ -154,6 +156,7 @@ pub fn press_up(
             start_radius,
             max_radius,
             color,
+            lifetime: lifetime.max(1),
         });
     }
 
@@ -198,7 +201,7 @@ unsafe fn advance(hwnd: HWND) {
         for ripple in ripples.iter_mut() {
             ripple.age += 1;
         }
-        ripples.retain(|ripple| ripple.age <= RIPPLE_LIFETIME);
+        ripples.retain(|ripple| ripple.age <= ripple.lifetime);
         !ripples.is_empty()
     };
     let has_presses = !PRESSES.lock().expect("effect mutex poisoned").is_empty();
@@ -233,39 +236,32 @@ unsafe fn paint(hwnd: HWND) {
 }
 
 unsafe fn draw_press(hdc: HDC, press: Press, screen_left: i32, screen_top: i32) {
+    let x = press.x - screen_left;
+    let y = press.y - screen_top;
+    let r = PRESS_RADIUS;
+
     let pen = CreatePen(PS_SOLID, 3, press.color.to_colorref());
     let old_pen = SelectObject(hdc, pen);
     let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-    let x = press.x - screen_left;
-    let y = press.y - screen_top;
-    Ellipse(
-        hdc,
-        x - PRESS_RADIUS,
-        y - PRESS_RADIUS,
-        x + PRESS_RADIUS,
-        y + PRESS_RADIUS,
-    );
-
+    Ellipse(hdc, x - r, y - r, x + r, y + r);
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
     DeleteObject(pen);
 }
 
 unsafe fn draw_ripple(hdc: HDC, ripple: Ripple, screen_left: i32, screen_top: i32) {
-    let progress = ripple.age as f32 / RIPPLE_LIFETIME as f32;
+    let progress = ripple.age as f32 / ripple.lifetime as f32;
     let radius = (ripple.start_radius as f32
         + (ripple.max_radius - ripple.start_radius).max(0) as f32 * progress) as i32;
     let thickness = (4.0 - progress * 2.5).max(1.0) as i32;
 
+    let x = ripple.x - screen_left;
+    let y = ripple.y - screen_top;
+
     let pen = CreatePen(PS_SOLID, thickness, ripple.color.to_colorref());
     let old_pen = SelectObject(hdc, pen);
     let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-    let x = ripple.x - screen_left;
-    let y = ripple.y - screen_top;
     Ellipse(hdc, x - radius, y - radius, x + radius, y + radius);
-
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
     DeleteObject(pen);

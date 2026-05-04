@@ -1,9 +1,15 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::ptr::null;
 
-use windows_sys::Win32::Foundation::COLORREF;
+use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
 pub const APP_ICON_ID: usize = 1;
+
+pub fn module_handle() -> HINSTANCE {
+    unsafe { GetModuleHandleW(null()) }
+}
 
 pub fn to_wide(value: &str) -> Vec<u16> {
     OsStr::new(value).encode_wide().chain(Some(0)).collect()

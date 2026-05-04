@@ -10,6 +10,16 @@ use crate::win;
 pub const DEFAULT_RIPPLE_RADIUS: i32 = 72;
 pub const MIN_RIPPLE_RADIUS: i32 = 20;
 pub const MAX_RIPPLE_RADIUS: i32 = 240;
+pub const DEFAULT_RIPPLE_LIFETIME: u32 = 28;
+pub const MIN_RIPPLE_LIFETIME: u32 = 10;
+pub const MAX_RIPPLE_LIFETIME: u32 = 60;
+
+
+pub fn default_gif_output_path() -> String {
+    std::env::var("USERPROFILE")
+        .map(|p| format!("{}\\Downloads", p))
+        .unwrap_or_else(|_| ".".to_string())
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct ClickColor {
@@ -59,6 +69,16 @@ pub struct AppConfig {
     pub start_with_windows: bool,
     #[serde(default = "default_ripple_radius")]
     pub ripple_radius: i32,
+    #[serde(default = "default_gif_output_path")]
+    pub gif_output_path: String,
+    #[serde(default)]
+    pub open_folder_after_save: bool,
+    #[serde(default)]
+    pub recent_left_colors: Vec<ClickColor>,
+    #[serde(default)]
+    pub recent_right_colors: Vec<ClickColor>,
+    #[serde(default = "default_ripple_lifetime")]
+    pub ripple_lifetime: u32,
 }
 
 impl Default for AppConfig {
@@ -68,6 +88,11 @@ impl Default for AppConfig {
             right_click_color: ClickColor::new(255, 96, 96),
             start_with_windows: false,
             ripple_radius: DEFAULT_RIPPLE_RADIUS,
+            gif_output_path: default_gif_output_path(),
+            open_folder_after_save: false,
+            recent_left_colors: Vec::new(),
+            recent_right_colors: Vec::new(),
+            ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
         }
     }
 }
@@ -100,11 +125,21 @@ impl AppConfig {
         self.ripple_radius = self
             .ripple_radius
             .clamp(MIN_RIPPLE_RADIUS, MAX_RIPPLE_RADIUS);
+        self.ripple_lifetime = self
+            .ripple_lifetime
+            .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME);
+        // 최근 색상 목록 최대 3개로 제한
+        self.recent_left_colors.truncate(3);
+        self.recent_right_colors.truncate(3);
     }
 }
 
 fn default_ripple_radius() -> i32 {
     DEFAULT_RIPPLE_RADIUS
+}
+
+fn default_ripple_lifetime() -> u32 {
+    DEFAULT_RIPPLE_LIFETIME
 }
 
 pub fn config_path() -> PathBuf {
