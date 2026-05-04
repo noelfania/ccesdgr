@@ -41,7 +41,6 @@ const CB_ADDSTRING:     u32 = 0x0143;
 const CB_SETCURSEL:     u32 = 0x014E;
 const CB_GETCURSEL:     u32 = 0x0147;
 const CBN_SELCHANGE:    i32 = 1;
-const WM_MOVING:        u32 = 0x0216;
 
 // ── 레이아웃 상수 ─────────────────────────────────────────────────────────
 const CLASS_NAME:  &str = "GMTLCaptureUI";
@@ -255,22 +254,12 @@ unsafe extern "system" fn capture_proc(
             if wx >= geom.bar_l && wx < geom.bar_r
                 && wy >= geom.bar_t && wy < geom.bar_b
             {
+                if crate::recorder::is_recording() {
+                    return HTCLIENT as LRESULT;
+                }
                 return HTCAPTION as LRESULT;
             }
             HTCLIENT as LRESULT
-        }
-        WM_MOVING => {
-            // 창이 화면 밖으로 나가지 않도록 클램프
-            let rect = &mut *(lp as *mut RECT);
-            let sw = GetSystemMetrics(SM_CXSCREEN);
-            let sh = GetSystemMetrics(SM_CYSCREEN);
-            let w  = rect.right  - rect.left;
-            let h  = rect.bottom - rect.top;
-            if rect.left < 0                { rect.left = 0; rect.right  = w; }
-            if rect.top  < 0                { rect.top  = 0; rect.bottom = h; }
-            if rect.right  > sw             { rect.right  = sw; rect.left = sw - w; }
-            if rect.bottom > sh + BAR_H * 2 { rect.bottom = sh; rect.top = sh - h; }
-            1
         }
         WM_SETCURSOR => {
             let ht = win::low_word(lp as usize) as i32;
@@ -438,11 +427,22 @@ unsafe fn create_controls(hwnd: HWND) {
                                          BarPos::Bottom => 2, BarPos::Left => 3 };
             SendMessageW(bar_pos_ctrl as HWND, CB_SETCURSEL, bp_idx, 0);
 
-            toggle_btn = make_btn(ID_TOGGLE, "●", bx + 5, 30, 80, BTN_H);
-            cancel_btn = make_btn(ID_CANCEL, "✕", bx + 5, 60, 80, BTN_H);
+            preset_ctrl = make_combo(ID_PRESET_COMBO, bx + 5, 28, 80, 22);
+            for s in ["크기","640x480","1280x720","1920x1080","1024x768","800x600"] {
+                add_str(preset_ctrl, s);
+            }
+            SendMessageW(preset_ctrl as HWND, CB_SETCURSEL, 0, 0);
 
-            ratio_ctrl  = 0;
-            preset_ctrl = 0;
+            ratio_ctrl = make_combo(ID_RATIO_COMBO, bx + 5, 52, 80, 22);
+            for s in ["자유","1:1","4:3","16:9","9:16"] { add_str(ratio_ctrl, s); }
+            let ratio_idx = match aspect {
+                None          => 0, Some((1,1)) => 1, Some((4,3)) => 2,
+                Some((16,9))  => 3, Some((9,16)) => 4, _          => 0,
+            };
+            SendMessageW(ratio_ctrl as HWND, CB_SETCURSEL, ratio_idx, 0);
+
+            toggle_btn = make_btn(ID_TOGGLE, "●", bx + 5, 76, 38, BTN_H);
+            cancel_btn = make_btn(ID_CANCEL, "✕", bx + 47, 76, 38, BTN_H);
         }
     }
 
@@ -518,7 +518,16 @@ unsafe fn update_ctrl_positions(hwnd: HWND) {
             if !r.is_null() { SetWindowPos(r, null_mut(), cx_ratio,  bcy, 65, 22, fl); }
             if !p.is_null() { SetWindowPos(p, null_mut(), cx_preset, bcy, 85, 22, fl); }
         }
-        BarPos::Left | BarPos::Right => {}
+        BarPos::Left | BarPos::Right => {
+            let geom = compute_geom(sel_w, sel_h, bar_pos);
+            let bx = geom.bar_l;
+            let fl = SWP_NOZORDER | SWP_NOACTIVATE;
+            if !b.is_null() { SetWindowPos(b, null_mut(), bx + 5, 4, 80, 22, fl); }
+            if !p.is_null() { SetWindowPos(p, null_mut(), bx + 5, 28, 80, 22, fl); }
+            if !r.is_null() { SetWindowPos(r, null_mut(), bx + 5, 52, 80, 22, fl); }
+            if !t.is_null() { SetWindowPos(t, null_mut(), bx + 5, 76, 38, BTN_H, fl); }
+            if !c.is_null() { SetWindowPos(c, null_mut(), bx + 47, 76, 38, BTN_H, fl); }
+        }
     }
     _ = hwnd;
 }
@@ -921,7 +930,7 @@ unsafe fn on_preset_changed(hwnd: HWND) {
         2 | 3     => (Some((16, 9)), 3),
         _         => (None, 0),
     };
-    let (bar_pos, ratio_ctrl_h) = {
+    let ratio_ctrl_h = {
         let mut g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_mut() { Some(s) => s, None => return };
         let cx = (s.sel.left + s.sel.right)  / 2;
@@ -931,20 +940,12 @@ unsafe fn on_preset_changed(hwnd: HWND) {
         s.sel.top    = cy - ph / 2;
         s.sel.bottom = cy + ph / 2;
         s.aspect = new_aspect;
-        (s.bar_pos, s.ratio_ctrl as HWND)
+        s.ratio_ctrl as HWND
     };
     if !ratio_ctrl_h.is_null() {
         SendMessageW(ratio_ctrl_h, CB_SETCURSEL, ratio_idx, 0);
     }
-    let sel = STATE.lock().expect("capture mutex poisoned").as_ref().unwrap().sel;
-    let geom = compute_geom(pw, ph, bar_pos);
-    let (wx, wy) = win_pos(&sel, bar_pos);
-    SetWindowPos(hwnd, null_mut(), wx, wy, geom.win_w, geom.win_h,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-    update_ctrl_positions(hwnd);
-    apply_region(hwnd);
-    InvalidateRect(hwnd, null(), 1);
-    UpdateWindow(hwnd);
+    refresh_capture_window(hwnd);
     SendMessageW(ctrl, CB_SETCURSEL, 0, 0);
 }
 
@@ -959,9 +960,20 @@ unsafe fn on_ratio_changed(hwnd: HWND) {
         1 => Some((1,1)), 2 => Some((4,3)), 3 => Some((16,9)),
         4 => Some((9,16)), _ => None,
     };
-    let mut g = STATE.lock().expect("capture mutex poisoned");
-    if let Some(s) = g.as_mut() { s.aspect = aspect; }
-    _ = hwnd;
+    {
+        let mut g = STATE.lock().expect("capture mutex poisoned");
+        let s = match g.as_mut() { Some(s) => s, None => return };
+        s.aspect = aspect;
+
+        if let Some((rw, rh)) = aspect {
+            let h = (s.sel.bottom - s.sel.top).max(MIN_SEL_H);
+            let new_w = (h * rw / rh).max(MIN_SEL_W);
+            let cx = (s.sel.left + s.sel.right) / 2;
+            s.sel.left = cx - new_w / 2;
+            s.sel.right = s.sel.left + new_w;
+        }
+    }
+    refresh_capture_window(hwnd);
 }
 
 unsafe fn on_bar_pos_changed(hwnd: HWND) {
@@ -994,8 +1006,26 @@ unsafe fn reposition_window(hwnd: HWND) {
     let (wx, wy) = win_pos(&sel, bar_pos);
     SetWindowPos(hwnd, null_mut(), wx, wy, geom.win_w, geom.win_h,
                  SWP_NOZORDER | SWP_NOACTIVATE);
-    apply_region(hwnd);
     rebuild_controls(hwnd);
+    apply_region(hwnd);
+    InvalidateRect(hwnd, null(), 1);
+    UpdateWindow(hwnd);
+}
+
+unsafe fn refresh_capture_window(hwnd: HWND) {
+    let (sel, bar_pos) = {
+        let g = STATE.lock().expect("capture mutex poisoned");
+        let s = match g.as_ref() { Some(s) => s, None => return };
+        (s.sel, s.bar_pos)
+    };
+    let sel_w = sel.right - sel.left;
+    let sel_h = sel.bottom - sel.top;
+    let geom = compute_geom(sel_w, sel_h, bar_pos);
+    let (wx, wy) = win_pos(&sel, bar_pos);
+    SetWindowPos(hwnd, null_mut(), wx, wy, geom.win_w, geom.win_h,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    update_ctrl_positions(hwnd);
+    apply_region(hwnd);
     InvalidateRect(hwnd, null(), 1);
     UpdateWindow(hwnd);
 }
@@ -1048,7 +1078,6 @@ unsafe fn poll_done(hwnd: HWND) {
                           null_mut(), null_mut(), SW_SHOWDEFAULT);
         }
     }
-    DestroyWindow(hwnd);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
