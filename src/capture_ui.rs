@@ -48,7 +48,7 @@ const CLASS_NAME:  &str = "GMTLCaptureUI";
 const BAR_H:       i32 = 32;  // 가로 바 높이 / 세로 바 너비
 const BAR_W_VERT:  i32 = 90;  // 세로 바(Left/Right)의 너비
 const BORDER:      i32 = 4;   // 캡처 프레임 테두리 두께
-const SHADOW:      i32 = 2;   // 프레임 외부 그림자 두께
+const SHADOW:      i32 = 0;   // 프레임 외부 그림자 없음
 const HANDLE:      i32 = 10;  // 리사이즈 핸들 감지 반경
 const MIN_SEL_W:   i32 = 320; // 최소 캡처 너비
 const MIN_SEL_H:   i32 = 100; // 최소 캡처 높이
@@ -543,7 +543,7 @@ unsafe fn apply_region(hwnd: HWND) {
     // 바 영역
     let bar = CreateRectRgn(geom.bar_l, geom.bar_t, geom.bar_r, geom.bar_b);
 
-    // 프레임 영역 (그림자 포함) — 바의 반대쪽
+    // 프레임 영역 — 바의 반대쪽
     let (fo_l, fo_t, fo_r, fo_b) = match bar_pos {
         BarPos::Top    => (0, geom.bar_b, geom.win_w, geom.win_h),
         BarPos::Bottom => (0, 0, geom.win_w, geom.bar_t),
@@ -606,39 +606,7 @@ unsafe fn paint(hwnd: HWND) {
     }
     SelectObject(hdc, old_font);
 
-    // ── 그림자 (프레임 바깥 SHADOW px) ──────────────────────────────────
-    let shadow_color = win::colorref(20, 20, 20);
-    let sb = CreateSolidBrush(shadow_color);
     let fx = geom.fx; let fy = geom.fy;
-    match bar_pos {
-        BarPos::Top => {
-            FillRect(hdc, &RECT { left: 0, top: fy, right: fx, bottom: fy + sel_h + SHADOW }, sb);
-            FillRect(hdc, &RECT { left: fx + sel_w, top: fy,
-                                  right: fx + sel_w + SHADOW, bottom: fy + sel_h + SHADOW }, sb);
-            FillRect(hdc, &RECT { left: fx, top: fy + sel_h,
-                                  right: fx + sel_w, bottom: fy + sel_h + SHADOW }, sb);
-        }
-        BarPos::Bottom => {
-            FillRect(hdc, &RECT { left: 0, top: 0, right: fx, bottom: fy + sel_h }, sb);
-            FillRect(hdc, &RECT { left: fx + sel_w, top: 0,
-                                  right: fx + sel_w + SHADOW, bottom: fy + sel_h }, sb);
-            FillRect(hdc, &RECT { left: fx, top: 0, right: fx + sel_w, bottom: fy }, sb);
-        }
-        BarPos::Left => {
-            FillRect(hdc, &RECT { left: fx, top: 0, right: fx + sel_w + SHADOW, bottom: fy }, sb);
-            FillRect(hdc, &RECT { left: fx, top: fy + sel_h,
-                                  right: fx + sel_w + SHADOW, bottom: fy + sel_h + SHADOW }, sb);
-            FillRect(hdc, &RECT { left: fx + sel_w, top: fy,
-                                  right: fx + sel_w + SHADOW, bottom: fy + sel_h }, sb);
-        }
-        BarPos::Right => {
-            FillRect(hdc, &RECT { left: 0, top: 0, right: fx + sel_w, bottom: fy }, sb);
-            FillRect(hdc, &RECT { left: 0, top: fy + sel_h,
-                                  right: fx + sel_w, bottom: fy + sel_h + SHADOW }, sb);
-            FillRect(hdc, &RECT { left: 0, top: fy, right: fx, bottom: fy + sel_h }, sb);
-        }
-    }
-    DeleteObject(sb);
 
     // ── 프레임 테두리 (BORDER px) ────────────────────────────────────────
     let border_color = if recording { win::colorref(220, 50, 50) }
@@ -868,7 +836,7 @@ unsafe fn on_record(hwnd: HWND) {
         width:  (sel.right  - sel.left - BORDER * 2).max(1),
         height: (sel.bottom - sel.top  - BORDER * 2).max(1),
     };
-    crate::recorder::start(region, output_path);
+    crate::recorder::start(region, output_path, config.show_gif_timestamp);
 
     let (tb, cb) = {
         let g = STATE.lock().expect("capture mutex poisoned");

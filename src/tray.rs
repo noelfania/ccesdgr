@@ -7,9 +7,10 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, LoadIconW, PostMessageW, SetForegroundWindow,
-    TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetSystemMetrics, LoadIconW, PostMessageW,
+    SetForegroundWindow, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, SM_CXSCREEN,
+    SM_CYSCREEN, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, WM_APP,
+    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
@@ -83,9 +84,19 @@ pub fn show_menu(hwnd: HWND) {
         GetCursorPos(&mut point);
         SetForegroundWindow(hwnd);
 
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        let mut flags = TPM_RIGHTBUTTON | TPM_RETURNCMD;
+        if point.y > screen_h / 2 {
+            flags |= TPM_BOTTOMALIGN;
+        }
+        if point.x > screen_w / 2 {
+            flags |= TPM_RIGHTALIGN;
+        }
+
         let command = TrackPopupMenu(
             menu,
-            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            flags,
             point.x,
             point.y,
             0,

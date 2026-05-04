@@ -6,13 +6,18 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use windows_sys::Win32::Foundation::SIZE;
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-    GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, SRCCOPY,
+    GetDIBits, GetStockObject, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, TextOutW, BITMAPINFO, BITMAPINFOHEADER, DEFAULT_GUI_FONT, DIB_RGB_COLORS, HDC,
+    SRCCOPY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DrawIcon, GetCursorInfo, CURSORINFO, CURSOR_SHOWING,
 };
+
+use crate::win;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
@@ -25,7 +30,7 @@ pub struct CaptureRegion {
     pub height: i32,
 }
 
-pub fn start(region: CaptureRegion, output_path: PathBuf) {
+pub fn start(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool) {
     if RECORDING.swap(true, Ordering::SeqCst) {
         return; // 이미 녹화 중
     }
@@ -33,7 +38,7 @@ pub fn start(region: CaptureRegion, output_path: PathBuf) {
     *LAST_OUTPUT.lock().expect("recorder mutex poisoned") = output_path.clone();
 
     thread::spawn(move || {
-        record_loop(region, output_path);
+        record_loop(region, output_path, show_timestamp);
         RECORDING.store(false, Ordering::Relaxed);
     });
 }
@@ -50,7 +55,7 @@ pub fn last_output_path() -> PathBuf {
     LAST_OUTPUT.lock().expect("recorder mutex poisoned").clone()
 }
 
-fn record_loop(region: CaptureRegion, output_path: PathBuf) {
+fn record_loop(region: CaptureRegion, output_path: PathBuf, show_timestamp: bool) {
     let file = match File::create(&output_path) {
         Ok(f) => f,
         Err(_) => return,
@@ -66,6 +71,7 @@ fn record_loop(region: CaptureRegion, output_path: PathBuf) {
     let _ = encoder.set_repeat(gif::Repeat::Infinite);
 
     let frame_interval = Duration::from_millis(100); // 10 FPS
+    let recording_start = Instant::now();
 
     loop {
         if STOP_SIGNAL.load(Ordering::Relaxed) {
@@ -74,7 +80,14 @@ fn record_loop(region: CaptureRegion, output_path: PathBuf) {
 
         let frame_start = Instant::now();
 
-        if let Some(bgra) = capture_region(region.x, region.y, region.width, region.height) {
+        let timestamp = show_timestamp.then(|| format_elapsed(recording_start.elapsed()));
+        if let Some(bgra) = capture_region(
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+            timestamp.as_deref(),
+        ) {
             // GetDIBits는 BGRA 순서 → RGB로 변환
             let rgb: Vec<u8> = bgra
                 .chunks_exact(4)
@@ -99,7 +112,13 @@ fn record_loop(region: CaptureRegion, output_path: PathBuf) {
     drop(encoder); // GIF 파일 완성 (flush)
 }
 
-fn capture_region(x: i32, y: i32, width: i32, height: i32) -> Option<Vec<u8>> {
+fn capture_region(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    timestamp: Option<&str>,
+) -> Option<Vec<u8>> {
     if width <= 0 || height <= 0 {
         return None;
     }
@@ -137,6 +156,10 @@ fn capture_region(x: i32, y: i32, width: i32, height: i32) -> Option<Vec<u8>> {
             }
         }
 
+        if let Some(text) = timestamp {
+            draw_timestamp(mem_dc, width, height, text);
+        }
+
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
         bmi.bmiHeader.biWidth = width;
@@ -163,4 +186,38 @@ fn capture_region(x: i32, y: i32, width: i32, height: i32) -> Option<Vec<u8>> {
 
         if rows == 0 { None } else { Some(pixels) }
     }
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let total_deciseconds = elapsed.as_millis() / 100;
+    let minutes = total_deciseconds / 600;
+    let seconds = (total_deciseconds / 10) % 60;
+    let tenths = total_deciseconds % 10;
+    format!("{:02}:{:02}.{}", minutes, seconds, tenths)
+}
+
+unsafe fn draw_timestamp(hdc: HDC, width: i32, height: i32, text: &str) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    let text_w = win::to_wide(text);
+    let text_len = (text_w.len() - 1) as i32;
+    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let old_font = SelectObject(hdc, font);
+    SetBkMode(hdc, 1);
+
+    let mut size = SIZE { cx: 0, cy: 0 };
+    GetTextExtentPoint32W(hdc, text_w.as_ptr(), text_len, &mut size);
+
+    let x = (width - size.cx - 8).max(0);
+    let y = (height - size.cy - 8).max(0);
+
+    // 검은 그림자를 먼저 찍어 밝은 배경에서도 읽히게 한다.
+    SetTextColor(hdc, win::colorref(0, 0, 0));
+    TextOutW(hdc, x + 1, y + 1, text_w.as_ptr(), text_len);
+    SetTextColor(hdc, win::colorref(255, 255, 255));
+    TextOutW(hdc, x, y, text_w.as_ptr(), text_len);
+
+    SelectObject(hdc, old_font);
 }

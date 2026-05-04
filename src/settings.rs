@@ -46,6 +46,7 @@ const ID_CANCEL: i32 = 2007;
 const ID_APPLY: i32 = 2008;
 const ID_GIF_PATH: i32 = 2010;
 const ID_GIF_OPEN_FOLDER: i32 = 2011;
+const ID_GIF_TIMESTAMP: i32 = 2012;
 const ID_RIPPLE_SPEED: i32 = 2014;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
@@ -317,6 +318,8 @@ unsafe fn sync_current_page(hwnd: HWND) {
                 }
                 config.open_folder_after_save =
                     IsDlgButtonChecked(hwnd, ID_GIF_OPEN_FOLDER) == BST_CHECKED;
+                config.show_gif_timestamp =
+                    IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
             }
             PAGE_MOUSE => {
                 if let Ok(radius) = control_text(hwnd, ID_RIPPLE_RADIUS).trim().parse::<i32>() {
@@ -367,6 +370,15 @@ unsafe fn create_general_page(hwnd: HWND) {
         if config.open_folder_after_save { BST_CHECKED } else { BST_UNCHECKED },
     );
     remember_content(open_cb);
+
+    content_label(hwnd, "GIF에 경과시간 표시", 42, 270, 200, 24);
+    let timestamp_cb = content_checkbox(hwnd, ID_GIF_TIMESTAMP, "", 512, 270, 40, 24);
+    CheckDlgButton(
+        hwnd,
+        ID_GIF_TIMESTAMP,
+        if config.show_gif_timestamp { BST_CHECKED } else { BST_UNCHECKED },
+    );
+    remember_content(timestamp_cb);
 }
 
 unsafe fn create_mouse_page(hwnd: HWND) {

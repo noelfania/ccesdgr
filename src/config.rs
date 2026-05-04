@@ -74,6 +74,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub open_folder_after_save: bool,
     #[serde(default)]
+    pub show_gif_timestamp: bool,
+    #[serde(default)]
     pub recent_left_colors: Vec<ClickColor>,
     #[serde(default)]
     pub recent_right_colors: Vec<ClickColor>,
@@ -90,6 +92,7 @@ impl Default for AppConfig {
             ripple_radius: DEFAULT_RIPPLE_RADIUS,
             gif_output_path: default_gif_output_path(),
             open_folder_after_save: false,
+            show_gif_timestamp: false,
             recent_left_colors: Vec::new(),
             recent_right_colors: Vec::new(),
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
