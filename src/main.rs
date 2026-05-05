@@ -21,11 +21,11 @@ use windows_sys::Win32::UI::HiDpi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowsHookExW,
-    SetProcessDPIAware, TranslateMessage, UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW,
+    LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SetProcessDPIAware,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, HHOOK, MB_ICONERROR, MB_OK, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_APP,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WNDCLASSEXW,
-    WS_OVERLAPPED, WM_LBUTTONUP, WM_RBUTTONUP,
+    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 use crate::config::AppConfig;
@@ -254,20 +254,27 @@ unsafe fn handle_mouse_click(lparam: LPARAM) {
     };
 
     let lifetime = state.config.ripple_lifetime;
+    let radius = state.config.ripple_radius;
+    let effect_kind = state.config.click_effect_kind;
     match click.phase {
         MousePhase::Down => effect::press_down(
             state.effect_hwnd as HWND,
-            click.x, click.y,
+            click.x,
+            click.y,
             click.button,
             color,
+            radius,
+            effect_kind,
         ),
         MousePhase::Up => effect::press_up(
             state.effect_hwnd as HWND,
-            click.x, click.y,
+            click.x,
+            click.y,
             click.button,
             color,
-            state.config.ripple_radius,
+            radius,
             lifetime,
+            effect_kind,
         ),
     }
 }
@@ -276,7 +283,11 @@ unsafe fn open_settings(hwnd: HWND) {
     let Some(state) = APP_STATE.get() else {
         return;
     };
-    let config = state.lock().expect("app state mutex poisoned").config.clone();
+    let config = state
+        .lock()
+        .expect("app state mutex poisoned")
+        .config
+        .clone();
     settings::show(hwnd, &config);
 }
 
@@ -289,7 +300,11 @@ unsafe fn open_record(hwnd: HWND) {
     let Some(state) = APP_STATE.get() else {
         return;
     };
-    let config = state.lock().expect("app state mutex poisoned").config.clone();
+    let config = state
+        .lock()
+        .expect("app state mutex poisoned")
+        .config
+        .clone();
     capture_ui::show(hwnd, config);
 }
 

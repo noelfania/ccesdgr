@@ -1,18 +1,18 @@
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetSystemMetrics, LoadIconW, PostMessageW,
-    SetForegroundWindow, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, SM_CXSCREEN,
-    SM_CYSCREEN, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, WM_APP,
-    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, FindWindowW, GetSystemMetrics, GetWindowRect,
+    LoadIconW, PostMessageW, SetForegroundWindow, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR,
+    MF_STRING, SM_CXSCREEN, SM_CYSCREEN, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN,
+    TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+};
 
 use crate::win;
 
@@ -82,27 +82,27 @@ pub fn show_menu(hwnd: HWND) {
 
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
-        SetForegroundWindow(hwnd);
 
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
         let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        let menu_x = point.x;
+        let mut menu_y = point.y;
+        let taskbar_rect = taskbar_rect();
         let mut flags = TPM_RIGHTBUTTON | TPM_RETURNCMD;
         if point.y > screen_h / 2 {
             flags |= TPM_BOTTOMALIGN;
+            if let Some(taskbar) = taskbar_rect {
+                if point.y >= taskbar.top && point.y <= taskbar.bottom {
+                    menu_y = taskbar.top - 1;
+                }
+            }
         }
         if point.x > screen_w / 2 {
             flags |= TPM_RIGHTALIGN;
         }
 
-        let command = TrackPopupMenu(
-            menu,
-            flags,
-            point.x,
-            point.y,
-            0,
-            hwnd,
-            null_mut(),
-        );
+        SetForegroundWindow(hwnd);
+        let command = TrackPopupMenu(menu, flags, menu_x, menu_y, 0, hwnd, null_mut());
 
         if command != 0 {
             PostMessageW(
@@ -115,6 +115,21 @@ pub fn show_menu(hwnd: HWND) {
 
         DestroyMenu(menu);
         PostMessageW(hwnd, WM_NULL, 0, 0);
+    }
+}
+
+unsafe fn taskbar_rect() -> Option<RECT> {
+    let class_name = win::to_wide("Shell_TrayWnd");
+    let hwnd = FindWindowW(class_name.as_ptr(), null());
+    if hwnd.is_null() {
+        return None;
+    }
+
+    let mut rect: RECT = std::mem::zeroed();
+    if GetWindowRect(hwnd, &mut rect) == 0 {
+        None
+    } else {
+        Some(rect)
     }
 }
 

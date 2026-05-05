@@ -1,23 +1,24 @@
+use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, DeleteObject, Ellipse, EndPaint, FillRect, GetStockObject,
-    InvalidateRect, SelectObject, HBRUSH, HDC, NULL_BRUSH, PAINTSTRUCT, PS_SOLID,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
+    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetSystemMetrics, KillTimer, RegisterClassExW,
-    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, HWND_TOPMOST, LWA_COLORKEY, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    WM_CREATE, WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetSystemMetrics, KillTimer, RegisterClassExW, SetTimer,
+    SetWindowPos, ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+    HWND_TOPMOST, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, ULW_ALPHA, WM_CREATE, WM_DESTROY, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use crate::config::ClickColor;
+use crate::config::{ClickColor, ClickEffectKind};
 use crate::win;
 
 const CLASS_NAME: &str = "GMTLMouseClickEffectWindow";
@@ -27,6 +28,7 @@ const PRESS_RADIUS: i32 = 8;
 
 static RIPPLES: Mutex<Vec<Ripple>> = Mutex::new(Vec::new());
 static PRESSES: Mutex<Vec<Press>> = Mutex::new(Vec::new());
+static FADES: Mutex<Vec<Fade>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Copy)]
 struct Ripple {
@@ -44,6 +46,18 @@ struct Press {
     x: i32,
     y: i32,
     button: usize,
+    color: ClickColor,
+    radius: i32,
+    effect_kind: ClickEffectKind,
+}
+
+#[derive(Clone, Copy)]
+struct Fade {
+    x: i32,
+    y: i32,
+    age: u32,
+    lifetime: u32,
+    radius: i32,
     color: ClickColor,
 }
 
@@ -66,11 +80,7 @@ pub fn create_window() -> HWND {
 
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_LAYERED
-                | WS_EX_TRANSPARENT
-                | WS_EX_TOPMOST
-                | WS_EX_TOOLWINDOW
-                | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class_name.as_ptr(),
             class_name.as_ptr(),
             WS_POPUP,
@@ -87,9 +97,6 @@ pub fn create_window() -> HWND {
 
     if !hwnd.is_null() {
         unsafe {
-            SetLayeredWindowAttributes(hwnd, win::colorref(0, 0, 0), 0, LWA_COLORKEY);
-        }
-        unsafe {
             resize_to_virtual_screen(hwnd);
         }
     }
@@ -103,6 +110,8 @@ pub fn press_down(
     y: i32,
     button: usize,
     color: ClickColor,
+    _radius: i32,
+    effect_kind: ClickEffectKind,
 ) {
     if hwnd.is_null() {
         return;
@@ -111,14 +120,21 @@ pub fn press_down(
     {
         let mut presses = PRESSES.lock().expect("effect mutex poisoned");
         presses.retain(|press| press.button != button);
-        presses.push(Press { x, y, button, color });
+        presses.push(Press {
+            x,
+            y,
+            button,
+            color,
+            radius: PRESS_RADIUS,
+            effect_kind,
+        });
     }
 
     unsafe {
         resize_to_virtual_screen(hwnd);
         ShowWindow(hwnd, SW_SHOWNA);
         SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
-        InvalidateRect(hwnd, null(), 1);
+        render_effect_window(hwnd);
     }
 }
 
@@ -130,6 +146,7 @@ pub fn press_up(
     color: ClickColor,
     max_radius: i32,
     lifetime: u32,
+    effect_kind: ClickEffectKind,
 ) {
     if hwnd.is_null() {
         return;
@@ -141,30 +158,43 @@ pub fn press_up(
         index.map(|index| presses.remove(index))
     };
 
-    let (color, start_radius) = if let Some(press) = press {
-        (press.color, PRESS_RADIUS)
+    let (color, effect_kind, start_radius) = if let Some(press) = press {
+        (press.color, press.effect_kind, press.radius)
     } else {
-        (color, PRESS_RADIUS)
+        (color, effect_kind, PRESS_RADIUS)
     };
 
-    {
-        let mut ripples = RIPPLES.lock().expect("effect mutex poisoned");
-        ripples.push(Ripple {
-            x,
-            y,
-            age: 0,
-            start_radius,
-            max_radius,
-            color,
-            lifetime: lifetime.max(1),
-        });
+    match effect_kind {
+        ClickEffectKind::Ripple => {
+            let mut ripples = RIPPLES.lock().expect("effect mutex poisoned");
+            ripples.push(Ripple {
+                x,
+                y,
+                age: 0,
+                start_radius,
+                max_radius,
+                color,
+                lifetime: lifetime.max(1),
+            });
+        }
+        ClickEffectKind::FilledFade => {
+            let mut fades = FADES.lock().expect("effect mutex poisoned");
+            fades.push(Fade {
+                x,
+                y,
+                age: 0,
+                lifetime: lifetime.max(1),
+                radius: start_radius,
+                color,
+            });
+        }
     }
 
     unsafe {
         resize_to_virtual_screen(hwnd);
         ShowWindow(hwnd, SW_SHOWNA);
         SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
-        InvalidateRect(hwnd, null(), 1);
+        render_effect_window(hwnd);
     }
 }
 
@@ -183,10 +213,6 @@ unsafe extern "system" fn effect_proc(
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
-        WM_PAINT => {
-            paint(hwnd);
-            0
-        }
         WM_DESTROY => {
             KillTimer(hwnd, TIMER_ID);
             0
@@ -204,67 +230,272 @@ unsafe fn advance(hwnd: HWND) {
         ripples.retain(|ripple| ripple.age <= ripple.lifetime);
         !ripples.is_empty()
     };
+    let has_fades = {
+        let mut fades = FADES.lock().expect("effect mutex poisoned");
+        for fade in fades.iter_mut() {
+            fade.age += 1;
+        }
+        fades.retain(|fade| fade.age <= fade.lifetime);
+        !fades.is_empty()
+    };
     let has_presses = !PRESSES.lock().expect("effect mutex poisoned").is_empty();
 
-    if has_ripples || has_presses {
-        InvalidateRect(hwnd, null(), 1);
+    if has_ripples || has_fades || has_presses {
+        render_effect_window(hwnd);
     } else {
         KillTimer(hwnd, TIMER_ID);
         ShowWindow(hwnd, SW_HIDE);
     }
 }
 
-unsafe fn paint(hwnd: HWND) {
-    let mut ps: PAINTSTRUCT = std::mem::zeroed();
-    let hdc = BeginPaint(hwnd, &mut ps);
-
-    let black_brush = GetStockObject(windows_sys::Win32::Graphics::Gdi::BLACK_BRUSH);
-    FillRect(hdc, &ps.rcPaint, black_brush as HBRUSH);
-
+unsafe fn render_effect_window(hwnd: HWND) {
     let (screen_left, screen_top) = virtual_screen_origin();
+    let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    let mut buffer = vec![0u8; width as usize * height as usize * 4];
+
     let presses = PRESSES.lock().expect("effect mutex poisoned").clone();
     for press in presses {
-        draw_press(hdc, press, screen_left, screen_top);
+        draw_press(&mut buffer, width, height, press, screen_left, screen_top);
     }
 
     let ripples = RIPPLES.lock().expect("effect mutex poisoned").clone();
     for ripple in ripples {
-        draw_ripple(hdc, ripple, screen_left, screen_top);
+        draw_ripple(&mut buffer, width, height, ripple, screen_left, screen_top);
     }
 
-    EndPaint(hwnd, &ps);
+    let fades = FADES.lock().expect("effect mutex poisoned").clone();
+    for fade in fades {
+        draw_fade(&mut buffer, width, height, fade, screen_left, screen_top);
+    }
+
+    update_layered_window(hwnd, screen_left, screen_top, width, height, &buffer);
 }
 
-unsafe fn draw_press(hdc: HDC, press: Press, screen_left: i32, screen_top: i32) {
+fn draw_press(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    press: Press,
+    screen_left: i32,
+    screen_top: i32,
+) {
     let x = press.x - screen_left;
     let y = press.y - screen_top;
-    let r = PRESS_RADIUS;
-
-    let pen = CreatePen(PS_SOLID, 3, press.color.to_colorref());
-    let old_pen = SelectObject(hdc, pen);
-    let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Ellipse(hdc, x - r, y - r, x + r, y + r);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    DeleteObject(pen);
+    match press.effect_kind {
+        ClickEffectKind::Ripple => draw_ring(
+            buffer,
+            width,
+            height,
+            x,
+            y,
+            press.radius,
+            3,
+            press.color,
+            255,
+        ),
+        ClickEffectKind::FilledFade => {
+            draw_filled_circle(buffer, width, height, x, y, press.radius, press.color, 255)
+        }
+    }
 }
 
-unsafe fn draw_ripple(hdc: HDC, ripple: Ripple, screen_left: i32, screen_top: i32) {
+fn draw_ripple(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    ripple: Ripple,
+    screen_left: i32,
+    screen_top: i32,
+) {
     let progress = ripple.age as f32 / ripple.lifetime as f32;
     let radius = (ripple.start_radius as f32
-        + (ripple.max_radius - ripple.start_radius).max(0) as f32 * progress) as i32;
+        + (ripple.max_radius - ripple.start_radius).max(0) as f32 * progress)
+        as i32;
     let thickness = (4.0 - progress * 2.5).max(1.0) as i32;
 
     let x = ripple.x - screen_left;
     let y = ripple.y - screen_top;
+    draw_ring(
+        buffer,
+        width,
+        height,
+        x,
+        y,
+        radius,
+        thickness,
+        ripple.color,
+        255,
+    );
+}
 
-    let pen = CreatePen(PS_SOLID, thickness, ripple.color.to_colorref());
-    let old_pen = SelectObject(hdc, pen);
-    let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Ellipse(hdc, x - radius, y - radius, x + radius, y + radius);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    DeleteObject(pen);
+fn draw_fade(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    fade: Fade,
+    screen_left: i32,
+    screen_top: i32,
+) {
+    let progress = (fade.age as f32 / fade.lifetime as f32).clamp(0.0, 1.0);
+    let alpha = (255.0 * (1.0 - progress)).round() as u8;
+    if alpha == 0 {
+        return;
+    }
+
+    let x = fade.x - screen_left;
+    let y = fade.y - screen_top;
+    draw_filled_circle(buffer, width, height, x, y, fade.radius, fade.color, alpha);
+}
+
+fn draw_ring(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    thickness: i32,
+    color: ClickColor,
+    alpha: u8,
+) {
+    let radius = radius.max(1);
+    let half = (thickness.max(1) as f32) / 2.0;
+    let min_dist = (radius as f32 - half).max(0.0);
+    let max_dist = radius as f32 + half;
+    let min_sq = min_dist * min_dist;
+    let max_sq = max_dist * max_dist;
+    let left = (cx - radius - thickness).max(0);
+    let top = (cy - radius - thickness).max(0);
+    let right = (cx + radius + thickness).min(width - 1);
+    let bottom = (cy + radius + thickness).min(height - 1);
+
+    for py in top..=bottom {
+        for px in left..=right {
+            let dx = (px - cx) as f32;
+            let dy = (py - cy) as f32;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq >= min_sq && dist_sq <= max_sq {
+                blend_pixel(buffer, width, px, py, color, alpha);
+            }
+        }
+    }
+}
+
+fn draw_filled_circle(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: ClickColor,
+    alpha: u8,
+) {
+    let radius = radius.max(1);
+    let radius_sq = radius * radius;
+    let left = (cx - radius).max(0);
+    let top = (cy - radius).max(0);
+    let right = (cx + radius).min(width - 1);
+    let bottom = (cy + radius).min(height - 1);
+
+    for py in top..=bottom {
+        for px in left..=right {
+            let dx = px - cx;
+            let dy = py - cy;
+            if dx * dx + dy * dy <= radius_sq {
+                blend_pixel(buffer, width, px, py, color, alpha);
+            }
+        }
+    }
+}
+
+fn blend_pixel(buffer: &mut [u8], width: i32, x: i32, y: i32, color: ClickColor, alpha: u8) {
+    let index = ((y * width + x) as usize) * 4;
+    let inv_alpha = 255u16.saturating_sub(alpha as u16);
+    let src_b = premultiply(color.blue, alpha);
+    let src_g = premultiply(color.green, alpha);
+    let src_r = premultiply(color.red, alpha);
+
+    buffer[index] = src_b.saturating_add(((buffer[index] as u16 * inv_alpha) / 255) as u8);
+    buffer[index + 1] = src_g.saturating_add(((buffer[index + 1] as u16 * inv_alpha) / 255) as u8);
+    buffer[index + 2] = src_r.saturating_add(((buffer[index + 2] as u16 * inv_alpha) / 255) as u8);
+    buffer[index + 3] = alpha.saturating_add(((buffer[index + 3] as u16 * inv_alpha) / 255) as u8);
+}
+
+fn premultiply(channel: u8, alpha: u8) -> u8 {
+    ((channel as u16 * alpha as u16) / 255) as u8
+}
+
+unsafe fn update_layered_window(
+    hwnd: HWND,
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    buffer: &[u8],
+) {
+    let screen_dc = windows_sys::Win32::Graphics::Gdi::GetDC(null_mut());
+    if screen_dc.is_null() {
+        return;
+    }
+
+    let mem_dc = CreateCompatibleDC(screen_dc);
+    if mem_dc.is_null() {
+        windows_sys::Win32::Graphics::Gdi::ReleaseDC(null_mut(), screen_dc);
+        return;
+    }
+
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..std::mem::zeroed()
+        },
+        ..std::mem::zeroed()
+    };
+    let mut bits: *mut c_void = null_mut();
+    let bitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap);
+        }
+        DeleteDC(mem_dc);
+        windows_sys::Win32::Graphics::Gdi::ReleaseDC(null_mut(), screen_dc);
+        return;
+    }
+
+    std::ptr::copy_nonoverlapping(buffer.as_ptr(), bits as *mut u8, buffer.len());
+    let old_bitmap = SelectObject(mem_dc, bitmap);
+    let dst_point = POINT { x: left, y: top };
+    let size = SIZE {
+        cx: width,
+        cy: height,
+    };
+    let src_point = POINT { x: 0, y: 0 };
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 255,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+
+    UpdateLayeredWindow(
+        hwnd, screen_dc, &dst_point, &size, mem_dc, &src_point, 0, &blend, ULW_ALPHA,
+    );
+
+    SelectObject(mem_dc, old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(mem_dc);
+    windows_sys::Win32::Graphics::Gdi::ReleaseDC(null_mut(), screen_dc);
 }
 
 unsafe fn resize_to_virtual_screen(hwnd: HWND) {

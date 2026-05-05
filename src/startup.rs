@@ -28,13 +28,7 @@ fn enable() -> io::Result<()> {
     let value_name = win::to_wide(VALUE_NAME);
 
     let mut key: HKEY = null_mut();
-    let result = unsafe {
-        RegCreateKeyW(
-            HKEY_CURRENT_USER,
-            run_key.as_ptr(),
-            &mut key,
-        )
-    };
+    let result = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, run_key.as_ptr(), &mut key) };
 
     if result != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(result as i32));
@@ -67,13 +61,7 @@ fn disable() -> io::Result<()> {
     let value_name = win::to_wide(VALUE_NAME);
 
     let mut key: HKEY = null_mut();
-    let result = unsafe {
-        RegCreateKeyW(
-            HKEY_CURRENT_USER,
-            run_key.as_ptr(),
-            &mut key,
-        )
-    };
+    let result = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, run_key.as_ptr(), &mut key) };
 
     if result != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(result as i32));

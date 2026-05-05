@@ -91,10 +91,8 @@ fn record_loop(
 
     let frame_interval = Duration::from_millis(100); // 10 FPS
     let recording_start = Instant::now();
-    let timestamp_font_size = timestamp_font_size.clamp(
-        MIN_GIF_TIMESTAMP_FONT_SIZE,
-        MAX_GIF_TIMESTAMP_FONT_SIZE,
-    );
+    let timestamp_font_size =
+        timestamp_font_size.clamp(MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE);
 
     loop {
         if STOP_SIGNAL.load(Ordering::Relaxed) {
@@ -209,7 +207,11 @@ fn capture_region(
         DeleteDC(mem_dc);
         ReleaseDC(null_mut(), screen_dc);
 
-        if rows == 0 { None } else { Some(pixels) }
+        if rows == 0 {
+            None
+        } else {
+            Some(pixels)
+        }
     }
 }
 

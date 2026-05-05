@@ -17,7 +17,6 @@ pub const DEFAULT_GIF_TIMESTAMP_FONT_SIZE: i32 = 14;
 pub const MIN_GIF_TIMESTAMP_FONT_SIZE: i32 = 8;
 pub const MAX_GIF_TIMESTAMP_FONT_SIZE: i32 = 24;
 
-
 pub fn default_gif_output_path() -> String {
     std::env::var("USERPROFILE")
         .map(|p| format!("{}\\Downloads", p))
@@ -65,6 +64,12 @@ impl ClickColor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ClickEffectKind {
+    Ripple,
+    FilledFade,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub left_click_color: ClickColor,
@@ -86,6 +91,8 @@ pub struct AppConfig {
     pub recent_right_colors: Vec<ClickColor>,
     #[serde(default = "default_ripple_lifetime")]
     pub ripple_lifetime: u32,
+    #[serde(default = "default_click_effect_kind")]
+    pub click_effect_kind: ClickEffectKind,
 }
 
 impl Default for AppConfig {
@@ -102,6 +109,7 @@ impl Default for AppConfig {
             recent_left_colors: Vec::new(),
             recent_right_colors: Vec::new(),
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
+            click_effect_kind: ClickEffectKind::Ripple,
         }
     }
 }
@@ -156,6 +164,10 @@ fn default_ripple_lifetime() -> u32 {
 
 fn default_gif_timestamp_font_size() -> i32 {
     DEFAULT_GIF_TIMESTAMP_FONT_SIZE
+}
+
+fn default_click_effect_kind() -> ClickEffectKind {
+    ClickEffectKind::Ripple
 }
 
 pub fn config_path() -> PathBuf {

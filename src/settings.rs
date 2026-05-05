@@ -5,35 +5,30 @@ use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, FrameRect, GetStockObject,
-    InvalidateRect, UpdateWindow, COLOR_3DFACE, DEFAULT_GUI_FONT, HDC,
+    CreateSolidBrush, DeleteObject, FillRect, FrameRect, GetStockObject, InvalidateRect,
+    UpdateWindow, COLOR_3DFACE, DEFAULT_GUI_FONT, HDC,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{
-    CheckDlgButton, DRAWITEMSTRUCT, IsDlgButtonChecked, BST_CHECKED, BST_UNCHECKED,
-};
 use windows_sys::Win32::UI::Controls::Dialogs::{
-    ChooseColorW, CHOOSECOLORW, CC_FULLOPEN, CC_RGBINIT, CC_SOLIDCOLOR,
+    ChooseColorW, CC_FULLOPEN, CC_RGBINIT, CC_SOLIDCOLOR, CHOOSECOLORW,
+};
+use windows_sys::Win32::UI::Controls::{
+    CheckDlgButton, IsDlgButtonChecked, BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetDlgItem,
-    GetWindowTextLengthW, GetWindowTextW,
-    LoadCursorW, LoadIconW, MessageBoxW, RegisterClassExW, SendMessageW, ShowWindow,
-    BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_OWNERDRAW, BS_PUSHBUTTON,
-    CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU,
-    IDC_ARROW, MB_ICONERROR, MB_OK, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DRAWITEM, WM_SETFONT,
-    WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD,
-    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetDlgItem, GetWindowTextLengthW,
+    GetWindowTextW, LoadCursorW, LoadIconW, MessageBoxW, RegisterClassExW, SendMessageW,
+    SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_OWNERDRAW,
+    BS_PUSHBUTTON, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU, IDC_ARROW, MB_ICONERROR, MB_OK, SW_SHOW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DRAWITEM, WM_HSCROLL,
+    WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::config::{
-    AppConfig, ClickColor,
-    MAX_GIF_TIMESTAMP_FONT_SIZE,
-    MAX_RIPPLE_LIFETIME, MAX_RIPPLE_RADIUS,
-    MIN_GIF_TIMESTAMP_FONT_SIZE,
-    MIN_RIPPLE_LIFETIME, MIN_RIPPLE_RADIUS,
+    AppConfig, ClickColor, ClickEffectKind, MAX_GIF_TIMESTAMP_FONT_SIZE, MAX_RIPPLE_LIFETIME,
+    MAX_RIPPLE_RADIUS, MIN_GIF_TIMESTAMP_FONT_SIZE, MIN_RIPPLE_LIFETIME, MIN_RIPPLE_RADIUS,
 };
 use crate::win;
 
@@ -51,6 +46,12 @@ const ID_GIF_OPEN_FOLDER: i32 = 2011;
 const ID_GIF_TIMESTAMP: i32 = 2012;
 const ID_GIF_TIMESTAMP_SIZE: i32 = 2013;
 const ID_RIPPLE_SPEED: i32 = 2014;
+const ID_CLICK_EFFECT_KIND: i32 = 2015;
+const ID_LEFT_HEX: i32 = 2016;
+const ID_RIGHT_HEX: i32 = 2017;
+const ID_PREVIEW_LEFT: i32 = 2018;
+const ID_PREVIEW_RIGHT: i32 = 2019;
+const ID_RIPPLE_SPEED_VALUE: i32 = 2026;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
 const ID_SWATCH_RIGHT_0: i32 = 2023;
@@ -63,6 +64,10 @@ const TBM_GETPOS: u32 = 0x0400;
 const TBM_SETRANGE: u32 = 0x0406;
 const TBM_SETPOS: u32 = 0x0405;
 const TBS_AUTOTICKS: WINDOW_STYLE = 0x0001;
+const CB_ADDSTRING: u32 = 0x0143;
+const CB_SETCURSEL: u32 = 0x014E;
+const CB_GETCURSEL: u32 = 0x0147;
+const CBS_DROPDOWNLIST: WINDOW_STYLE = 3;
 
 const PAGE_GENERAL: i32 = 1;
 const PAGE_MOUSE: i32 = 2;
@@ -146,6 +151,10 @@ unsafe extern "system" fn settings_proc(
         WM_DRAWITEM => {
             let dis = &*(lparam as *const DRAWITEMSTRUCT);
             let id = dis.CtlID as i32;
+            if id == ID_PREVIEW_LEFT || id == ID_PREVIEW_RIGHT {
+                draw_color_preview(dis.hDC, id, &dis.rcItem);
+                return 1;
+            }
             if (ID_SWATCH_LEFT_0..=ID_SWATCH_RIGHT_0 + 2).contains(&id) {
                 draw_swatch(dis.hDC, id, &dis.rcItem);
                 return 1;
@@ -155,21 +164,39 @@ unsafe extern "system" fn settings_proc(
         WM_COMMAND => {
             let command_id = win::low_word(wparam as usize) as i32;
             match command_id {
-                ID_NAV_GENERAL => { show_page(hwnd, PAGE_GENERAL); 0 }
-                ID_NAV_MOUSE   => { show_page(hwnd, PAGE_MOUSE);   0 }
-                ID_NAV_INFO    => { show_page(hwnd, PAGE_INFO);    0 }
+                ID_NAV_GENERAL => {
+                    show_page(hwnd, PAGE_GENERAL);
+                    0
+                }
+                ID_NAV_MOUSE => {
+                    show_page(hwnd, PAGE_MOUSE);
+                    0
+                }
+                ID_NAV_INFO => {
+                    show_page(hwnd, PAGE_INFO);
+                    0
+                }
                 ID_LEFT_COLOR => {
+                    if !sync_current_page(hwnd) {
+                        return 0;
+                    }
                     choose_click_color(hwnd, ID_LEFT_COLOR);
                     refresh_if_mouse(hwnd);
                     0
                 }
                 ID_RIGHT_COLOR => {
+                    if !sync_current_page(hwnd) {
+                        return 0;
+                    }
                     choose_click_color(hwnd, ID_RIGHT_COLOR);
                     refresh_if_mouse(hwnd);
                     0
                 }
                 // 최근 색상 스와치 클릭
                 id if (ID_SWATCH_LEFT_0..=ID_SWATCH_RIGHT_0 + 2).contains(&id) => {
+                    if !sync_current_page(hwnd) {
+                        return 0;
+                    }
                     apply_swatch_color(hwnd, id);
                     refresh_if_mouse(hwnd);
                     0
@@ -192,6 +219,12 @@ unsafe extern "system" fn settings_proc(
                 }
                 _ => DefWindowProcW(hwnd, message, wparam, lparam),
             }
+        }
+        WM_HSCROLL => {
+            if *CURRENT_PAGE.lock().expect("settings page mutex poisoned") == PAGE_MOUSE {
+                update_speed_text_from_slider(hwnd);
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_DESTROY => {
             if SETTINGS_HWND.load(Ordering::Relaxed) == hwnd as isize {
@@ -218,7 +251,7 @@ unsafe extern "system" fn settings_proc(
 
 unsafe fn refresh_if_mouse(hwnd: HWND) {
     if *CURRENT_PAGE.lock().expect("settings page mutex poisoned") == PAGE_MOUSE {
-        show_page(hwnd, PAGE_MOUSE);
+        render_page(hwnd, PAGE_MOUSE);
     }
 }
 
@@ -232,14 +265,14 @@ unsafe fn create_controls(hwnd: HWND) {
     *CURRENT_CONFIG.lock().expect("settings mutex poisoned") = Some(config.clone());
     *CURRENT_PAGE.lock().expect("settings page mutex poisoned") = PAGE_GENERAL;
 
-    button(hwnd, ID_NAV_GENERAL, "기본",   16,  14, 72, 28, false);
-    button(hwnd, ID_NAV_MOUSE,   "마우스", 88,  14, 82, 28, false);
-    button(hwnd, ID_NAV_INFO,    "정보",   170, 14, 72, 28, false);
+    button(hwnd, ID_NAV_GENERAL, "기본", 16, 14, 72, 28, false);
+    button(hwnd, ID_NAV_MOUSE, "마우스", 88, 14, 82, 28, false);
+    button(hwnd, ID_NAV_INFO, "정보", 170, 14, 72, 28, false);
 
-    button(hwnd, ID_RESET,   "초기화", 16,  374, 86, 28, false);
-    button(hwnd, ID_CONFIRM, "확인",   320, 374, 78, 28, true);
-    button(hwnd, ID_CANCEL,  "취소",   406, 374, 78, 28, false);
-    button(hwnd, ID_APPLY,   "적용",   492, 374, 78, 28, false);
+    button(hwnd, ID_RESET, "초기화", 16, 374, 86, 28, false);
+    button(hwnd, ID_CONFIRM, "확인", 320, 374, 78, 28, true);
+    button(hwnd, ID_CANCEL, "취소", 406, 374, 78, 28, false);
+    button(hwnd, ID_APPLY, "적용", 492, 374, 78, 28, false);
 
     show_page(hwnd, PAGE_GENERAL);
 }
@@ -252,7 +285,9 @@ unsafe fn save_settings(hwnd: HWND) {
 }
 
 unsafe fn apply_settings_from_window(hwnd: HWND) -> bool {
-    sync_current_page(hwnd);
+    if !sync_current_page(hwnd) {
+        return false;
+    }
 
     let Some(config) = CURRENT_CONFIG
         .lock()
@@ -279,7 +314,9 @@ unsafe fn reset_settings(hwnd: HWND) {
 }
 
 unsafe fn show_page(hwnd: HWND, page: i32) {
-    sync_current_page(hwnd);
+    if !sync_current_page(hwnd) {
+        return;
+    }
     render_page(hwnd, page);
 }
 
@@ -289,21 +326,21 @@ unsafe fn render_page(hwnd: HWND, page: i32) {
 
     match page {
         PAGE_MOUSE => create_mouse_page(hwnd),
-        PAGE_INFO  => create_info_page(hwnd),
-        _          => create_general_page(hwnd),
+        PAGE_INFO => create_info_page(hwnd),
+        _ => create_general_page(hwnd),
     }
 
     repaint_window(hwnd);
 }
 
-unsafe fn sync_current_page(hwnd: HWND) {
+unsafe fn sync_current_page(hwnd: HWND) -> bool {
     let page = *CURRENT_PAGE.lock().expect("settings page mutex poisoned");
     let has_content = !CONTENT_CONTROLS
         .lock()
         .expect("settings controls mutex poisoned")
         .is_empty();
     if !has_content {
-        return;
+        return true;
     }
 
     if let Some(config) = CURRENT_CONFIG
@@ -323,30 +360,64 @@ unsafe fn sync_current_page(hwnd: HWND) {
                     IsDlgButtonChecked(hwnd, ID_GIF_OPEN_FOLDER) == BST_CHECKED;
                 config.show_gif_timestamp =
                     IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
-                if let Ok(size) = control_text(hwnd, ID_GIF_TIMESTAMP_SIZE).trim().parse::<i32>() {
-                    config.gif_timestamp_font_size = size.clamp(
-                        MIN_GIF_TIMESTAMP_FONT_SIZE,
-                        MAX_GIF_TIMESTAMP_FONT_SIZE,
-                    );
+                if let Ok(size) = control_text(hwnd, ID_GIF_TIMESTAMP_SIZE)
+                    .trim()
+                    .parse::<i32>()
+                {
+                    config.gif_timestamp_font_size =
+                        size.clamp(MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE);
                 }
             }
             PAGE_MOUSE => {
+                let Some(left_color) = read_hex_color(hwnd, ID_LEFT_HEX, "왼쪽 클릭 효과 색상")
+                else {
+                    return false;
+                };
+                let Some(right_color) = read_hex_color(hwnd, ID_RIGHT_HEX, "오른쪽 클릭 효과 색상")
+                else {
+                    return false;
+                };
+                config.left_click_color = left_color;
+                config.right_click_color = right_color;
+
+                let effect_combo = GetDlgItem(hwnd, ID_CLICK_EFFECT_KIND);
+                if !effect_combo.is_null() {
+                    config.click_effect_kind = match SendMessageW(effect_combo, CB_GETCURSEL, 0, 0)
+                    {
+                        1 => ClickEffectKind::FilledFade,
+                        _ => ClickEffectKind::Ripple,
+                    };
+                }
                 if let Ok(radius) = control_text(hwnd, ID_RIPPLE_RADIUS).trim().parse::<i32>() {
                     config.ripple_radius = radius.clamp(MIN_RIPPLE_RADIUS, MAX_RIPPLE_RADIUS);
                 }
-                // 트랙바 값 읽기 (슬라이더가 오른쪽일수록 빠름 = 낮은 lifetime)
-                let track = GetDlgItem(hwnd, ID_RIPPLE_SPEED);
-                if !track.is_null() {
-                    let slider_pos = SendMessageW(track, TBM_GETPOS, 0, 0) as u32;
-                    // 슬라이더 pos ↑ → 빠름 → lifetime ↓: lifetime = MAX+MIN-pos
-                    config.ripple_lifetime = (MIN_RIPPLE_LIFETIME + MAX_RIPPLE_LIFETIME)
-                        .saturating_sub(slider_pos)
-                        .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME);
+                let speed_from_text = control_text(hwnd, ID_RIPPLE_SPEED_VALUE)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .map(|speed| speed.clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME));
+
+                if let Some(speed) = speed_from_text {
+                    config.ripple_lifetime = lifetime_from_speed(speed);
+                    let track = GetDlgItem(hwnd, ID_RIPPLE_SPEED);
+                    if !track.is_null() {
+                        SendMessageW(track, TBM_SETPOS, 1, speed as LPARAM);
+                    }
+                } else {
+                    // 트랙바 값 읽기 (슬라이더가 오른쪽일수록 빠름 = 낮은 lifetime)
+                    let track = GetDlgItem(hwnd, ID_RIPPLE_SPEED);
+                    if !track.is_null() {
+                        let slider_pos = SendMessageW(track, TBM_GETPOS, 0, 0) as u32;
+                        // 슬라이더 pos ↑ → 빠름 → lifetime ↓: lifetime = MAX+MIN-pos
+                        config.ripple_lifetime = lifetime_from_speed(slider_pos);
+                    }
                 }
             }
             _ => {}
         }
     }
+
+    true
 }
 
 unsafe fn create_general_page(hwnd: HWND) {
@@ -359,12 +430,23 @@ unsafe fn create_general_page(hwnd: HWND) {
     content_group_box(hwnd, "기본 설정", 16, 52, 554, 288);
 
     content_label(hwnd, "윈도우 실행시 기동", 42, 92, 180, 24);
-    content_label(hwnd, "체크하면 다음 Windows 로그인부터 자동으로 실행됩니다.", 42, 118, 420, 22);
+    content_label(
+        hwnd,
+        "체크하면 다음 Windows 로그인부터 자동으로 실행됩니다.",
+        42,
+        118,
+        420,
+        22,
+    );
     let startup_cb = content_checkbox(hwnd, ID_STARTUP_CHECK, "", 512, 92, 40, 24);
     CheckDlgButton(
         hwnd,
         ID_STARTUP_CHECK,
-        if config.start_with_windows { BST_CHECKED } else { BST_UNCHECKED },
+        if config.start_with_windows {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
     );
     remember_content(startup_cb);
 
@@ -376,7 +458,11 @@ unsafe fn create_general_page(hwnd: HWND) {
     CheckDlgButton(
         hwnd,
         ID_GIF_OPEN_FOLDER,
-        if config.open_folder_after_save { BST_CHECKED } else { BST_UNCHECKED },
+        if config.open_folder_after_save {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
     );
     remember_content(open_cb);
 
@@ -385,7 +471,11 @@ unsafe fn create_general_page(hwnd: HWND) {
     CheckDlgButton(
         hwnd,
         ID_GIF_TIMESTAMP,
-        if config.show_gif_timestamp { BST_CHECKED } else { BST_UNCHECKED },
+        if config.show_gif_timestamp {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
     );
     remember_content(timestamp_cb);
 
@@ -408,32 +498,71 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "마우스 설정", 16, 52, 554, 266);
+    content_group_box(hwnd, "마우스 설정", 16, 52, 554, 300);
 
-    // ── 왼쪽 클릭 색상 (y=88) ──────────────────────────────────────
-    content_label(hwnd, "왼쪽 클릭 효과 색상", 42, 92, 190, 24);
-    content_label(hwnd, &config.left_click_color.to_hex(), 240, 92, 72, 20);
-    content_swatches(hwnd, ID_SWATCH_LEFT_0, 318, 91);
-    content_button(hwnd, ID_LEFT_COLOR, "색상 선택", 392, 88, 96, 26, false);
+    content_label(hwnd, "클릭 효과", 42, 92, 120, 24);
+    let effect_combo = content_combo(hwnd, ID_CLICK_EFFECT_KIND, 240, 88, 180, 120);
+    combo_add(effect_combo, "물결파장");
+    combo_add(effect_combo, "채워진 원 페이드");
+    let effect_index = match config.click_effect_kind {
+        ClickEffectKind::Ripple => 0,
+        ClickEffectKind::FilledFade => 1,
+    };
+    SendMessageW(effect_combo, CB_SETCURSEL, effect_index, 0);
 
-    // ── 오른쪽 클릭 색상 (y=132) ──────────────────────────────────
-    content_label(hwnd, "오른쪽 클릭 효과 색상", 42, 136, 190, 24);
-    content_label(hwnd, &config.right_click_color.to_hex(), 240, 136, 72, 20);
-    content_swatches(hwnd, ID_SWATCH_RIGHT_0, 318, 135);
-    content_button(hwnd, ID_RIGHT_COLOR, "색상 선택", 392, 132, 96, 26, false);
+    // ── 왼쪽 클릭 색상 (y=128) ──────────────────────────────────────
+    content_label(hwnd, "왼쪽 클릭 효과 색상", 42, 128, 190, 24);
+    content_color_preview(hwnd, ID_PREVIEW_LEFT, 240, 124, 28, 24);
+    content_edit(
+        hwnd,
+        ID_LEFT_HEX,
+        &config.left_click_color.to_hex(),
+        276,
+        124,
+        78,
+        24,
+    );
+    content_swatches(hwnd, ID_SWATCH_LEFT_0, 362, 127);
+    content_button(hwnd, ID_LEFT_COLOR, "색상 선택", 442, 124, 96, 26, false);
 
-    // ── 파장 반지름 (y=176) ─────────────────────────────────────
-    content_label(hwnd, "파장 반지름", 42, 180, 180, 24);
-    content_edit(hwnd, ID_RIPPLE_RADIUS, &config.ripple_radius.to_string(), 240, 176, 72, 24);
+    // ── 오른쪽 클릭 색상 (y=172) ──────────────────────────────────
+    content_label(hwnd, "오른쪽 클릭 효과 색상", 42, 172, 190, 24);
+    content_color_preview(hwnd, ID_PREVIEW_RIGHT, 240, 168, 28, 24);
+    content_edit(
+        hwnd,
+        ID_RIGHT_HEX,
+        &config.right_click_color.to_hex(),
+        276,
+        168,
+        78,
+        24,
+    );
+    content_swatches(hwnd, ID_SWATCH_RIGHT_0, 362, 171);
+    content_button(hwnd, ID_RIGHT_COLOR, "색상 선택", 442, 168, 96, 26, false);
+
+    // ── 효과 반지름 (y=216) ─────────────────────────────────────
+    content_label(hwnd, "효과 반지름", 42, 216, 180, 24);
+    content_edit(
+        hwnd,
+        ID_RIPPLE_RADIUS,
+        &config.ripple_radius.to_string(),
+        240,
+        212,
+        72,
+        24,
+    );
     content_label(
         hwnd,
         &format!("{} ~ {} px", MIN_RIPPLE_RADIUS, MAX_RIPPLE_RADIUS),
-        322, 180, 130, 24,
+        322,
+        216,
+        130,
+        24,
     );
 
-    // ── 파장 속도 (y=216) ────────────────────────────────────────
-    content_label(hwnd, "파장 속도", 42, 220, 100, 24);
-    content_label(hwnd, "느림", 146, 247, 30, 20);
+    // ── 효과 속도 (y=252) ────────────────────────────────────────
+    content_label(hwnd, "효과 속도", 42, 256, 100, 24);
+    content_label(hwnd, "느림", 146, 283, 30, 20);
     // 트랙바: 느림←→빠름 (슬라이더 값 ↑ = 빠름 = lifetime ↓)
     let track_cls = win::to_wide("msctls_trackbar32");
     let track = CreateWindowExW(
@@ -441,26 +570,55 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         track_cls.as_ptr(),
         null(),
         WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-        178, 238, 280, 26,
-        hwnd, ID_RIPPLE_SPEED as isize as HMENU, null_mut(), null_mut(),
+        178,
+        274,
+        250,
+        26,
+        hwnd,
+        ID_RIPPLE_SPEED as isize as HMENU,
+        null_mut(),
+        null_mut(),
     );
     if !track.is_null() {
         // range: 10(느림,좌)~60(빠름,우) → 반전: 슬라이더 위치 = MAX+MIN-lifetime
         let range_lp = ((MAX_RIPPLE_LIFETIME as i32) << 16 | MIN_RIPPLE_LIFETIME as i32) as LPARAM;
         SendMessageW(track, TBM_SETRANGE, 1, range_lp);
-        let slider_pos = (MIN_RIPPLE_LIFETIME + MAX_RIPPLE_LIFETIME - config.ripple_lifetime)
-            .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME) as LPARAM;
+        let slider_pos = speed_from_lifetime(config.ripple_lifetime) as LPARAM;
         SendMessageW(track, TBM_SETPOS, 1, slider_pos);
         remember_content(track);
     }
-    content_label(hwnd, "빠름", 462, 247, 30, 20);
+    content_edit(
+        hwnd,
+        ID_RIPPLE_SPEED_VALUE,
+        &speed_from_lifetime(config.ripple_lifetime).to_string(),
+        462,
+        252,
+        50,
+        24,
+    );
+    content_label(hwnd, "빠름", 432, 283, 30, 20);
+    content_label(hwnd, "10 ~ 60", 516, 256, 48, 20);
 }
 
 unsafe fn create_info_page(hwnd: HWND) {
     content_group_box(hwnd, "프로그램 정보", 16, 52, 554, 218);
     content_label(hwnd, "GMTL Mouse Click", 42, 92, 220, 24);
-    content_label(hwnd, "마우스 클릭 위치에 원형 파장 효과를 표시합니다.", 42, 126, 420, 24);
-    content_label(hwnd, "트레이 아이콘에서 설정창을 다시 열거나 종료할 수 있습니다.", 42, 156, 460, 24);
+    content_label(
+        hwnd,
+        "마우스 클릭 위치에 원형 파장 효과를 표시합니다.",
+        42,
+        126,
+        420,
+        24,
+    );
+    content_label(
+        hwnd,
+        "트레이 아이콘에서 설정창을 다시 열거나 종료할 수 있습니다.",
+        42,
+        156,
+        460,
+        24,
+    );
 }
 
 // 스와치 색상 조회 (CURRENT_CONFIG의 recent 목록에서)
@@ -468,11 +626,35 @@ fn swatch_color(id: i32) -> Option<ClickColor> {
     let g = CURRENT_CONFIG.lock().ok()?;
     let config = g.as_ref()?;
     let (list, idx) = match id {
-        2020..=2022 => (&config.recent_left_colors,  (id - ID_SWATCH_LEFT_0)  as usize),
-        2023..=2025 => (&config.recent_right_colors, (id - ID_SWATCH_RIGHT_0) as usize),
+        2020..=2022 => (&config.recent_left_colors, (id - ID_SWATCH_LEFT_0) as usize),
+        2023..=2025 => (
+            &config.recent_right_colors,
+            (id - ID_SWATCH_RIGHT_0) as usize,
+        ),
         _ => return None,
     };
     list.get(idx).copied()
+}
+
+fn preview_color(id: i32) -> Option<ClickColor> {
+    let g = CURRENT_CONFIG.lock().ok()?;
+    let config = g.as_ref()?;
+    match id {
+        ID_PREVIEW_LEFT => Some(config.left_click_color),
+        ID_PREVIEW_RIGHT => Some(config.right_click_color),
+        _ => None,
+    }
+}
+
+unsafe fn draw_color_preview(hdc: HDC, id: i32, rc: &windows_sys::Win32::Foundation::RECT) {
+    let color = preview_color(id).unwrap_or_else(|| ClickColor::new(180, 180, 180));
+    let brush = CreateSolidBrush(color.to_colorref());
+    FillRect(hdc, rc, brush);
+    DeleteObject(brush);
+
+    let border = CreateSolidBrush(win::colorref(80, 80, 80));
+    FrameRect(hdc, rc, border);
+    DeleteObject(border);
 }
 
 // 스와치 버튼 그리기 (WM_DRAWITEM에서 호출)
@@ -500,7 +682,10 @@ unsafe fn apply_swatch_color(hwnd: HWND, id: i32) {
         None => return,
     };
     let mut g = CURRENT_CONFIG.lock().expect("settings mutex poisoned");
-    let config = match g.as_mut() { Some(c) => c, None => return };
+    let config = match g.as_mut() {
+        Some(c) => c,
+        None => return,
+    };
 
     if (ID_SWATCH_LEFT_0..=ID_SWATCH_LEFT_0 + 2).contains(&id) {
         config.left_click_color = color;
@@ -517,6 +702,29 @@ fn push_recent(recent: &mut Vec<ClickColor>, color: ClickColor) {
     recent.truncate(3);
 }
 
+fn speed_from_lifetime(lifetime: u32) -> u32 {
+    (MIN_RIPPLE_LIFETIME + MAX_RIPPLE_LIFETIME)
+        .saturating_sub(lifetime)
+        .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME)
+}
+
+fn lifetime_from_speed(speed: u32) -> u32 {
+    (MIN_RIPPLE_LIFETIME + MAX_RIPPLE_LIFETIME)
+        .saturating_sub(speed)
+        .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME)
+}
+
+unsafe fn update_speed_text_from_slider(hwnd: HWND) {
+    let track = GetDlgItem(hwnd, ID_RIPPLE_SPEED);
+    if track.is_null() {
+        return;
+    }
+
+    let speed = (SendMessageW(track, TBM_GETPOS, 0, 0) as u32)
+        .clamp(MIN_RIPPLE_LIFETIME, MAX_RIPPLE_LIFETIME);
+    set_control_text(hwnd, ID_RIPPLE_SPEED_VALUE, &speed.to_string());
+}
+
 // 색상 선택 다이얼로그 (왼쪽/오른쪽/외곽선 공통)
 unsafe fn choose_click_color(hwnd: HWND, target: i32) {
     let Some(mut config) = CURRENT_CONFIG
@@ -528,7 +736,7 @@ unsafe fn choose_click_color(hwnd: HWND, target: i32) {
     };
 
     let initial_color = match target {
-        ID_LEFT_COLOR  => config.left_click_color,
+        ID_LEFT_COLOR => config.left_click_color,
         ID_RIGHT_COLOR => config.right_click_color,
         _ => return,
     };
@@ -567,10 +775,15 @@ unsafe fn choose_click_color(hwnd: HWND, target: i32) {
 unsafe fn content_swatches(hwnd: HWND, base_id: i32, x: i32, y: i32) {
     for i in 0..3 {
         let sw = child(
-            hwnd, "BUTTON", "",
+            hwnd,
+            "BUTTON",
+            "",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as WINDOW_STYLE,
             0,
-            x + i * 22, y, 18, 18,
+            x + i * 22,
+            y,
+            18,
+            18,
             base_id + i,
         );
         remember_content(sw);
@@ -602,59 +815,173 @@ fn remember_content(hwnd: HWND) {
 }
 
 unsafe fn content_label(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) {
-    let control = child(hwnd, "STATIC", text, WS_CHILD | WS_VISIBLE, 0, x, y, width, height, 0);
+    let control = child(
+        hwnd,
+        "STATIC",
+        text,
+        WS_CHILD | WS_VISIBLE,
+        0,
+        x,
+        y,
+        width,
+        height,
+        0,
+    );
     remember_content(control);
 }
 
 unsafe fn content_group_box(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) {
     let control = child(
-        hwnd, "BUTTON", text,
+        hwnd,
+        "BUTTON",
+        text,
         WS_CHILD | WS_VISIBLE | BS_GROUPBOX as WINDOW_STYLE,
-        0, x, y, width, height, 0,
+        0,
+        x,
+        y,
+        width,
+        height,
+        0,
     );
     remember_content(control);
 }
 
 unsafe fn content_checkbox(
-    hwnd: HWND, id: i32, text: &str, x: i32, y: i32, width: i32, height: i32,
+    hwnd: HWND,
+    id: i32,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 ) -> HWND {
     child(
-        hwnd, "BUTTON", text,
+        hwnd,
+        "BUTTON",
+        text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as WINDOW_STYLE,
-        0, x, y, width, height, id,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
     )
 }
 
 unsafe fn content_edit(hwnd: HWND, id: i32, text: &str, x: i32, y: i32, width: i32, height: i32) {
     let control = child(
-        hwnd, "EDIT", text,
+        hwnd,
+        "EDIT",
+        text,
         WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as WINDOW_STYLE,
-        0, x, y, width, height, id,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
     );
     remember_content(control);
 }
 
+unsafe fn content_color_preview(hwnd: HWND, id: i32, x: i32, y: i32, width: i32, height: i32) {
+    let control = child(
+        hwnd,
+        "BUTTON",
+        "",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW as WINDOW_STYLE,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
+    );
+    remember_content(control);
+}
+
+unsafe fn content_combo(hwnd: HWND, id: i32, x: i32, y: i32, width: i32, height: i32) -> HWND {
+    let control = child(
+        hwnd,
+        "COMBOBOX",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
+    );
+    remember_content(control);
+    control
+}
+
+unsafe fn combo_add(hwnd: HWND, text: &str) {
+    let text = win::to_wide(text);
+    SendMessageW(hwnd, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+}
+
 unsafe fn button(
-    hwnd: HWND, id: i32, text: &str,
-    x: i32, y: i32, width: i32, height: i32, is_default: bool,
+    hwnd: HWND,
+    id: i32,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    is_default: bool,
 ) {
     child(
-        hwnd, "BUTTON", text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP
-            | (if is_default { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON }) as WINDOW_STYLE,
-        0, x, y, width, height, id,
+        hwnd,
+        "BUTTON",
+        text,
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | (if is_default {
+                BS_DEFPUSHBUTTON
+            } else {
+                BS_PUSHBUTTON
+            }) as WINDOW_STYLE,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
     );
 }
 
 unsafe fn content_button(
-    hwnd: HWND, id: i32, text: &str,
-    x: i32, y: i32, width: i32, height: i32, is_default: bool,
+    hwnd: HWND,
+    id: i32,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    is_default: bool,
 ) {
     let control = child(
-        hwnd, "BUTTON", text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP
-            | (if is_default { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON }) as WINDOW_STYLE,
-        0, x, y, width, height, id,
+        hwnd,
+        "BUTTON",
+        text,
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | (if is_default {
+                BS_DEFPUSHBUTTON
+            } else {
+                BS_PUSHBUTTON
+            }) as WINDOW_STYLE,
+        0,
+        x,
+        y,
+        width,
+        height,
+        id,
     );
     remember_content(control);
 }
@@ -678,7 +1005,10 @@ unsafe fn child(
         class_name.as_ptr(),
         text.as_ptr(),
         style,
-        x, y, width, height,
+        x,
+        y,
+        width,
+        height,
         parent,
         id as isize as HMENU,
         null_mut(),
@@ -704,13 +1034,35 @@ unsafe fn control_text(hwnd: HWND, id: i32) -> String {
     String::from_utf16_lossy(&buffer[..length as usize])
 }
 
+unsafe fn set_control_text(hwnd: HWND, id: i32, text: &str) {
+    let control = GetDlgItem(hwnd, id);
+    if control.is_null() {
+        return;
+    }
+
+    let text = win::to_wide(text);
+    SetWindowTextW(control, text.as_ptr());
+}
+
+unsafe fn read_hex_color(hwnd: HWND, id: i32, label: &str) -> Option<ClickColor> {
+    let text = control_text(hwnd, id);
+    ClickColor::from_hex(&text).or_else(|| {
+        error(hwnd, &format!("{label}은 #RRGGBB 형식으로 입력하세요."));
+        None
+    })
+}
+
 unsafe fn error(hwnd: HWND, message: &str) {
-    let title   = win::to_wide("설정 오류");
+    let title = win::to_wide("설정 오류");
     let message = win::to_wide(message);
     MessageBoxW(hwnd, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
 }
 
 fn active_window() -> Option<HWND> {
     let value = SETTINGS_HWND.load(Ordering::Relaxed);
-    if value == 0 { None } else { Some(value as HWND) }
+    if value == 0 {
+        None
+    } else {
+        Some(value as HWND)
+    }
 }
