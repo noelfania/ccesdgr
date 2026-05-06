@@ -68,6 +68,7 @@ impl ClickColor {
 pub enum ClickEffectKind {
     Ripple,
     FilledFade,
+    FilledCrossFade,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

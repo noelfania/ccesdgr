@@ -59,6 +59,7 @@ struct Fade {
     lifetime: u32,
     radius: i32,
     color: ClickColor,
+    effect_kind: ClickEffectKind,
 }
 
 pub fn create_window() -> HWND {
@@ -177,7 +178,7 @@ pub fn press_up(
                 lifetime: lifetime.max(1),
             });
         }
-        ClickEffectKind::FilledFade => {
+        ClickEffectKind::FilledFade | ClickEffectKind::FilledCrossFade => {
             let mut fades = FADES.lock().expect("effect mutex poisoned");
             fades.push(Fade {
                 x,
@@ -186,6 +187,7 @@ pub fn press_up(
                 lifetime: lifetime.max(1),
                 radius: start_radius,
                 color,
+                effect_kind,
             });
         }
     }
@@ -301,6 +303,16 @@ fn draw_press(
         ClickEffectKind::FilledFade => {
             draw_filled_circle(buffer, width, height, x, y, press.radius, press.color, 255)
         }
+        ClickEffectKind::FilledCrossFade => draw_filled_circle_with_cross_cutout(
+            buffer,
+            width,
+            height,
+            x,
+            y,
+            press.radius,
+            press.color,
+            255,
+        ),
     }
 }
 
@@ -349,7 +361,23 @@ fn draw_fade(
 
     let x = fade.x - screen_left;
     let y = fade.y - screen_top;
-    draw_filled_circle(buffer, width, height, x, y, fade.radius, fade.color, alpha);
+    match fade.effect_kind {
+        ClickEffectKind::FilledCrossFade => {
+            draw_filled_circle_with_cross_cutout(
+                buffer,
+                width,
+                height,
+                x,
+                y,
+                fade.radius,
+                fade.color,
+                alpha,
+            );
+        }
+        _ => {
+            draw_filled_circle(buffer, width, height, x, y, fade.radius, fade.color, alpha);
+        }
+    }
 }
 
 fn draw_ring(
@@ -412,6 +440,64 @@ fn draw_filled_circle(
             }
         }
     }
+}
+
+fn draw_filled_circle_with_cross_cutout(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: ClickColor,
+    alpha: u8,
+) {
+    let radius = radius.max(1);
+    let radius_sq = radius * radius;
+    let left = (cx - radius).max(0);
+    let top = (cy - radius).max(0);
+    let right = (cx + radius).min(width - 1);
+    let bottom = (cy + radius).min(height - 1);
+
+    for py in top..=bottom {
+        for px in left..=right {
+            let dx = px - cx;
+            let dy = py - cy;
+            if dx * dx + dy * dy <= radius_sq && !is_cross_cutout(dx as f32, dy as f32, radius) {
+                blend_pixel(buffer, width, px, py, color, alpha);
+            }
+        }
+    }
+}
+
+fn is_cross_cutout(dx: f32, dy: f32, radius: i32) -> bool {
+    let radius = radius as f32;
+    let edge_margin = (radius * 0.30).max(2.0);
+    let arm_len = (radius - edge_margin).max(1.0);
+    let half_thickness = (radius * 0.10).max(1.0);
+    distance_to_segment_sq(dx, dy, -arm_len, 0.0, arm_len, 0.0) <= half_thickness * half_thickness
+        || distance_to_segment_sq(dx, dy, 0.0, -arm_len, 0.0, arm_len)
+            <= half_thickness * half_thickness
+}
+
+fn distance_to_segment_sq(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let vx = bx - ax;
+    let vy = by - ay;
+    let wx = px - ax;
+    let wy = py - ay;
+    let segment_len_sq = vx * vx + vy * vy;
+    if segment_len_sq <= f32::EPSILON {
+        let dx = px - ax;
+        let dy = py - ay;
+        return dx * dx + dy * dy;
+    }
+
+    let t = ((wx * vx + wy * vy) / segment_len_sq).clamp(0.0, 1.0);
+    let closest_x = ax + t * vx;
+    let closest_y = ay + t * vy;
+    let dx = px - closest_x;
+    let dy = py - closest_y;
+    dx * dx + dy * dy
 }
 
 fn blend_pixel(buffer: &mut [u8], width: i32, x: i32, y: i32, color: ClickColor, alpha: u8) {
