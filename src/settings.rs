@@ -384,6 +384,10 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                 if !effect_combo.is_null() {
                     config.click_effect_kind = match SendMessageW(effect_combo, CB_GETCURSEL, 0, 0)
                     {
+                        6 => ClickEffectKind::XCrossFade,
+                        5 => ClickEffectKind::CrossFade,
+                        4 => ClickEffectKind::ArcDotFade,
+                        3 => ClickEffectKind::ArcFade,
                         2 => ClickEffectKind::FilledCrossFade,
                         1 => ClickEffectKind::FilledFade,
                         _ => ClickEffectKind::Ripple,
@@ -506,10 +510,18 @@ unsafe fn create_mouse_page(hwnd: HWND) {
     combo_add(effect_combo, "물결파장");
     combo_add(effect_combo, "채워진 원 페이드");
     combo_add(effect_combo, "뚫린 십자 페이드");
+    combo_add(effect_combo, "원호 페이드");
+    combo_add(effect_combo, "원호와 점 페이드");
+    combo_add(effect_combo, "십자 페이드");
+    combo_add(effect_combo, "X자 페이드");
     let effect_index = match config.click_effect_kind {
         ClickEffectKind::Ripple => 0,
         ClickEffectKind::FilledFade => 1,
         ClickEffectKind::FilledCrossFade => 2,
+        ClickEffectKind::ArcFade => 3,
+        ClickEffectKind::ArcDotFade => 4,
+        ClickEffectKind::CrossFade => 5,
+        ClickEffectKind::XCrossFade => 6,
     };
     SendMessageW(effect_combo, CB_SETCURSEL, effect_index, 0);
 

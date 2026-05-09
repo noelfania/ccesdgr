@@ -214,31 +214,28 @@ pub fn press_up(
         (color, effect_kind, PRESS_RADIUS)
     };
 
-    match effect_kind {
-        ClickEffectKind::Ripple => {
-            let mut ripples = RIPPLES.lock().expect("effect mutex poisoned");
-            ripples.push(Ripple {
-                x,
-                y,
-                age: 0,
-                start_radius,
-                max_radius,
-                color,
-                lifetime: lifetime.max(1),
-            });
-        }
-        ClickEffectKind::FilledFade | ClickEffectKind::FilledCrossFade => {
-            let mut fades = FADES.lock().expect("effect mutex poisoned");
-            fades.push(Fade {
-                x,
-                y,
-                age: 0,
-                lifetime: lifetime.max(1),
-                radius: start_radius,
-                color,
-                effect_kind,
-            });
-        }
+    if effect_kind == ClickEffectKind::Ripple {
+        let mut ripples = RIPPLES.lock().expect("effect mutex poisoned");
+        ripples.push(Ripple {
+            x,
+            y,
+            age: 0,
+            start_radius,
+            max_radius,
+            color,
+            lifetime: lifetime.max(1),
+        });
+    } else {
+        let mut fades = FADES.lock().expect("effect mutex poisoned");
+        fades.push(Fade {
+            x,
+            y,
+            age: 0,
+            lifetime: lifetime.max(1),
+            radius: start_radius,
+            color,
+            effect_kind,
+        });
     }
 
     unsafe {
@@ -370,32 +367,17 @@ fn draw_press(
 ) {
     let x = press.x - screen_left;
     let y = press.y - screen_top;
-    match press.effect_kind {
-        ClickEffectKind::Ripple => draw_ring(
-            buffer,
-            width,
-            height,
-            x,
-            y,
-            press.radius,
-            3,
-            press.color,
-            255,
-        ),
-        ClickEffectKind::FilledFade => {
-            draw_filled_circle(buffer, width, height, x, y, press.radius, press.color, 255)
-        }
-        ClickEffectKind::FilledCrossFade => draw_filled_circle_with_cross_cutout(
-            buffer,
-            width,
-            height,
-            x,
-            y,
-            press.radius,
-            press.color,
-            255,
-        ),
-    }
+    draw_static_effect(
+        buffer,
+        width,
+        height,
+        x,
+        y,
+        press.radius,
+        press.color,
+        255,
+        press.effect_kind,
+    );
 }
 
 fn draw_ripple(
@@ -443,21 +425,57 @@ fn draw_fade(
 
     let x = fade.x - screen_left;
     let y = fade.y - screen_top;
-    match fade.effect_kind {
+    draw_static_effect(
+        buffer,
+        width,
+        height,
+        x,
+        y,
+        fade.radius,
+        fade.color,
+        alpha,
+        fade.effect_kind,
+    );
+}
+
+fn draw_static_effect(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    radius: i32,
+    color: ClickColor,
+    alpha: u8,
+    effect_kind: ClickEffectKind,
+) {
+    match effect_kind {
+        ClickEffectKind::Ripple => draw_ring(buffer, width, height, x, y, radius, 3, color, alpha),
+        ClickEffectKind::FilledFade => {
+            draw_filled_circle(buffer, width, height, x, y, radius, color, alpha)
+        }
         ClickEffectKind::FilledCrossFade => {
-            draw_filled_circle_with_cross_cutout(
+            draw_filled_circle_with_cross_cutout(buffer, width, height, x, y, radius, color, alpha)
+        }
+        ClickEffectKind::ArcFade => draw_ring(buffer, width, height, x, y, radius, 3, color, alpha),
+        ClickEffectKind::ArcDotFade => {
+            draw_ring(buffer, width, height, x, y, radius, 3, color, alpha);
+            draw_filled_circle(
                 buffer,
                 width,
                 height,
                 x,
                 y,
-                fade.radius,
-                fade.color,
+                (radius / 4).max(2),
+                color,
                 alpha,
             );
         }
-        _ => {
-            draw_filled_circle(buffer, width, height, x, y, fade.radius, fade.color, alpha);
+        ClickEffectKind::CrossFade => {
+            draw_cross(buffer, width, height, x, y, radius, false, color, alpha);
+        }
+        ClickEffectKind::XCrossFade => {
+            draw_cross(buffer, width, height, x, y, radius, true, color, alpha);
         }
     }
 }
@@ -490,6 +508,47 @@ fn draw_ring(
             let dy = (py - cy) as f32;
             let dist_sq = dx * dx + dy * dy;
             if dist_sq >= min_sq && dist_sq <= max_sq {
+                blend_pixel(buffer, width, px, py, color, alpha);
+            }
+        }
+    }
+}
+
+fn draw_cross(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    rotated: bool,
+    color: ClickColor,
+    alpha: u8,
+) {
+    let radius = radius.max(1);
+    let arm_len = (radius as f32 * 0.82).max(1.0);
+    let half_thickness = (radius as f32 * 0.12).max(1.0);
+    let limit = (arm_len + half_thickness).ceil() as i32;
+    let left = (cx - limit).max(0);
+    let top = (cy - limit).max(0);
+    let right = (cx + limit).min(width - 1);
+    let bottom = (cy + limit).min(height - 1);
+    let threshold = half_thickness * half_thickness;
+
+    for py in top..=bottom {
+        for px in left..=right {
+            let dx = (px - cx) as f32;
+            let dy = (py - cy) as f32;
+            let on_cross = if rotated {
+                let diag = arm_len / 2.0_f32.sqrt();
+                distance_to_segment_sq(dx, dy, -diag, -diag, diag, diag) <= threshold
+                    || distance_to_segment_sq(dx, dy, -diag, diag, diag, -diag) <= threshold
+            } else {
+                distance_to_segment_sq(dx, dy, -arm_len, 0.0, arm_len, 0.0) <= threshold
+                    || distance_to_segment_sq(dx, dy, 0.0, -arm_len, 0.0, arm_len) <= threshold
+            };
+
+            if on_cross {
                 blend_pixel(buffer, width, px, py, color, alpha);
             }
         }

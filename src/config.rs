@@ -69,6 +69,10 @@ pub enum ClickEffectKind {
     Ripple,
     FilledFade,
     FilledCrossFade,
+    ArcFade,
+    ArcDotFade,
+    CrossFade,
+    XCrossFade,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
