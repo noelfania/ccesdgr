@@ -11,11 +11,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetSystemMetrics, KillTimer, RegisterClassExW, SetTimer,
-    SetWindowPos, ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    HWND_TOPMOST, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, ULW_ALPHA, WM_CREATE, WM_DESTROY, WM_TIMER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE, SW_SHOWNA, ULW_ALPHA,
+    WM_CREATE, WM_DESTROY, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::config::{ClickColor, ClickEffectKind};
@@ -62,6 +61,64 @@ struct Fade {
     effect_kind: ClickEffectKind,
 }
 
+#[derive(Clone, Copy)]
+struct EffectBounds {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl EffectBounds {
+    fn new(x: i32, y: i32, radius: i32) -> Self {
+        Self {
+            left: x - radius,
+            top: y - radius,
+            right: x + radius + 1,
+            bottom: y + radius + 1,
+        }
+    }
+
+    fn include(&mut self, other: Self) {
+        self.left = self.left.min(other.left);
+        self.top = self.top.min(other.top);
+        self.right = self.right.max(other.right);
+        self.bottom = self.bottom.max(other.bottom);
+    }
+
+    fn clamp_to_virtual_screen(self) -> Option<Self> {
+        let (screen_left, screen_top) = virtual_screen_origin();
+        let screen_width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let screen_height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+        if screen_width <= 0 || screen_height <= 0 {
+            return None;
+        }
+
+        let screen_right = screen_left + screen_width;
+        let screen_bottom = screen_top + screen_height;
+        let bounds = Self {
+            left: self.left.clamp(screen_left, screen_right),
+            top: self.top.clamp(screen_top, screen_bottom),
+            right: self.right.clamp(screen_left, screen_right),
+            bottom: self.bottom.clamp(screen_top, screen_bottom),
+        };
+
+        if bounds.width() > 0 && bounds.height() > 0 {
+            Some(bounds)
+        } else {
+            None
+        }
+    }
+
+    fn width(self) -> i32 {
+        self.right - self.left
+    }
+
+    fn height(self) -> i32 {
+        self.bottom - self.top
+    }
+}
+
 pub fn create_window() -> HWND {
     let instance = unsafe { GetModuleHandleW(null()) };
     let class_name = win::to_wide(CLASS_NAME);
@@ -96,12 +153,6 @@ pub fn create_window() -> HWND {
         )
     };
 
-    if !hwnd.is_null() {
-        unsafe {
-            resize_to_virtual_screen(hwnd);
-        }
-    }
-
     hwnd
 }
 
@@ -132,10 +183,8 @@ pub fn press_down(
     }
 
     unsafe {
-        resize_to_virtual_screen(hwnd);
-        ShowWindow(hwnd, SW_SHOWNA);
+        show_effect_window(hwnd);
         SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
-        render_effect_window(hwnd);
     }
 }
 
@@ -193,10 +242,8 @@ pub fn press_up(
     }
 
     unsafe {
-        resize_to_virtual_screen(hwnd);
-        ShowWindow(hwnd, SW_SHOWNA);
+        show_effect_window(hwnd);
         SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, None);
-        render_effect_window(hwnd);
     }
 }
 
@@ -250,32 +297,67 @@ unsafe fn advance(hwnd: HWND) {
     }
 }
 
-unsafe fn render_effect_window(hwnd: HWND) {
-    let (screen_left, screen_top) = virtual_screen_origin();
-    let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if width <= 0 || height <= 0 {
-        return;
+unsafe fn show_effect_window(hwnd: HWND) {
+    if render_effect_window(hwnd) {
+        ShowWindow(hwnd, SW_SHOWNA);
     }
+}
 
+unsafe fn render_effect_window(hwnd: HWND) -> bool {
+    let presses = PRESSES.lock().expect("effect mutex poisoned").clone();
+    let ripples = RIPPLES.lock().expect("effect mutex poisoned").clone();
+    let fades = FADES.lock().expect("effect mutex poisoned").clone();
+    let Some(bounds) = active_effect_bounds(&presses, &ripples, &fades) else {
+        return false;
+    };
+
+    let width = bounds.width();
+    let height = bounds.height();
     let mut buffer = vec![0u8; width as usize * height as usize * 4];
 
-    let presses = PRESSES.lock().expect("effect mutex poisoned").clone();
     for press in presses {
-        draw_press(&mut buffer, width, height, press, screen_left, screen_top);
+        draw_press(&mut buffer, width, height, press, bounds.left, bounds.top);
     }
 
-    let ripples = RIPPLES.lock().expect("effect mutex poisoned").clone();
     for ripple in ripples {
-        draw_ripple(&mut buffer, width, height, ripple, screen_left, screen_top);
+        draw_ripple(&mut buffer, width, height, ripple, bounds.left, bounds.top);
     }
 
-    let fades = FADES.lock().expect("effect mutex poisoned").clone();
     for fade in fades {
-        draw_fade(&mut buffer, width, height, fade, screen_left, screen_top);
+        draw_fade(&mut buffer, width, height, fade, bounds.left, bounds.top);
     }
 
-    update_layered_window(hwnd, screen_left, screen_top, width, height, &buffer);
+    update_layered_window(hwnd, bounds.left, bounds.top, width, height, &buffer);
+    true
+}
+
+fn active_effect_bounds(
+    presses: &[Press],
+    ripples: &[Ripple],
+    fades: &[Fade],
+) -> Option<EffectBounds> {
+    let mut bounds = None;
+
+    for press in presses {
+        include_bounds(&mut bounds, press.x, press.y, press.radius + 4);
+    }
+    for ripple in ripples {
+        include_bounds(&mut bounds, ripple.x, ripple.y, ripple.max_radius + 6);
+    }
+    for fade in fades {
+        include_bounds(&mut bounds, fade.x, fade.y, fade.radius + 2);
+    }
+
+    bounds.and_then(EffectBounds::clamp_to_virtual_screen)
+}
+
+fn include_bounds(bounds: &mut Option<EffectBounds>, x: i32, y: i32, radius: i32) {
+    let next = EffectBounds::new(x, y, radius.max(1));
+    if let Some(bounds) = bounds {
+        bounds.include(next);
+    } else {
+        *bounds = Some(next);
+    }
 }
 
 fn draw_press(
@@ -584,24 +666,9 @@ unsafe fn update_layered_window(
     windows_sys::Win32::Graphics::Gdi::ReleaseDC(null_mut(), screen_dc);
 }
 
-unsafe fn resize_to_virtual_screen(hwnd: HWND) {
-    let (left, top) = virtual_screen_origin();
-    let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        left,
-        top,
-        width,
-        height,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
-}
-
-unsafe fn virtual_screen_origin() -> (i32, i32) {
+fn virtual_screen_origin() -> (i32, i32) {
     (
-        GetSystemMetrics(SM_XVIRTUALSCREEN),
-        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) },
+        unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) },
     )
 }
