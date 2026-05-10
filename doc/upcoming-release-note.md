@@ -30,4 +30,48 @@
 - 스레드 안전: 캡처 콜백은 비동기 스레드. 인코더 접근은 mutex로 직렬화.
 
 
+# Rust 클릭 효과 앱 구현 계획
 
+## 구현 방향
+- 경량화를 위해 Tauri 같은 웹뷰 기반 프레임워크는 사용하지 않고, `windows` crate 기반 Win32 네이티브 앱으로 구현합니다.
+
+## 주요 파일
+- [`Cargo.toml`](Cargo.toml): Rust 패키지와 `windows`, `serde`, 설정 저장용 의존성 정의
+- [`src/main.rs`](src/main.rs): Win32 메시지 루프, 트레이 아이콘, 전역 마우스 훅, 오버레이 윈도우 진입점
+- [`src/config.rs`](src/config.rs): 좌/우 클릭 색상, 시작프로그램 여부를 JSON 설정 파일로 저장/로드
+- [`src/startup.rs`](src/startup.rs): 현재 실행 파일을 Windows 시작프로그램 레지스트리에 등록/해제
+- [`src/tray.rs`](src/tray.rs): 작업표시줄 트레이 아이콘, 설정/종료 메뉴 처리
+- [`src/effect.rs`](src/effect.rs): 클릭 위치 주변 원형 파장 애니메이션 렌더링
+
+## 동작 구조
+```mermaid
+flowchart TD
+    appStart["앱 시작"] --> loadConfig["설정 로드"]
+    loadConfig --> trayIcon["트레이 아이콘 등록"]
+    loadConfig --> mouseHook["전역 마우스 훅 등록"]
+    mouseHook --> clickEvent["좌/우 클릭 감지"]
+    clickEvent --> overlayWindow["투명 오버레이 표시"]
+    overlayWindow --> rippleEffect["원형 파장 애니메이션"]
+    trayIcon --> settingsWindow["설정창"]
+    settingsWindow --> saveConfig["설정 저장"]
+    saveConfig --> startupRegistry["시작프로그램 등록 상태 반영"]
+```
+
+## 의존 관계
+
+```mermaid
+flowchart LR
+    Tray[01 Tray Icon]
+    Settings[02 Settings Window]
+    Draw[03 ZoomIt Draw]
+    Record[04 ZoomIt Record GIF]
+    Snip[05 ZoomIt Snip]
+    SelectRect["SelectRectangle (공용)"]
+
+    Tray -.IPC/HWND.-> Settings
+    Settings -.파일/IPC.-> Draw
+    Settings -.파일/IPC.-> Record
+    Settings -.파일/IPC.-> Snip
+    Record --> SelectRect
+    Snip --> SelectRect
+```
