@@ -1,5 +1,6 @@
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -9,9 +10,10 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, FindWindowW, GetSystemMetrics, GetWindowRect,
-    LoadIconW, PostMessageW, SetForegroundWindow, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR,
-    MF_STRING, SM_CXSCREEN, SM_CYSCREEN, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN,
-    TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    LoadIconW, PostMessageW, RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu,
+    IDI_APPLICATION, MF_SEPARATOR, MF_STRING, SM_CXSCREEN, SM_CYSCREEN, TPM_BOTTOMALIGN,
+    TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+    WM_NULL, WM_RBUTTONUP,
 };
 
 use crate::win;
@@ -20,8 +22,23 @@ pub const WM_TRAYICON: u32 = WM_APP + 1;
 pub const ID_TRAY_SETTINGS: usize = 1001;
 pub const ID_TRAY_EXIT: usize = 1002;
 pub const ID_TRAY_RECORD: usize = 1003;
+pub const ID_TRAY_SNIP: usize = 1004;
+pub const ID_TRAY_DRAW: usize = 1005;
 
 const TRAY_UID: u32 = 1;
+static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
+
+pub enum TrayAction {
+    OpenSettings,
+    ShowMenu,
+}
+
+pub fn taskbar_created_message() -> u32 {
+    *TASKBAR_CREATED.get_or_init(|| {
+        let message = win::to_wide("TaskbarCreated");
+        unsafe { RegisterWindowMessageW(message.as_ptr()) }
+    })
+}
 
 pub fn add(hwnd: HWND) {
     let mut data = notify_data(hwnd);
@@ -56,8 +73,12 @@ pub fn remove(hwnd: HWND) {
     }
 }
 
-pub fn is_activate_message(message: isize) -> bool {
-    message as u32 == WM_RBUTTONUP || message as u32 == WM_LBUTTONUP
+pub fn action_from_message(message: isize) -> Option<TrayAction> {
+    match message as u32 {
+        WM_RBUTTONUP => Some(TrayAction::ShowMenu),
+        WM_LBUTTONUP | WM_LBUTTONDBLCLK => Some(TrayAction::OpenSettings),
+        _ => None,
+    }
 }
 
 pub fn show_menu(hwnd: HWND) {
@@ -72,11 +93,15 @@ pub fn show_menu(hwnd: HWND) {
     } else {
         win::to_wide("GIF 녹화...")
     };
+    let snip = win::to_wide("스냅샷...");
+    let draw = win::to_wide("화면 주석");
     let exit = win::to_wide("종료");
 
     unsafe {
         AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settings.as_ptr());
         AppendMenuW(menu, MF_STRING, ID_TRAY_RECORD, record_label.as_ptr());
+        AppendMenuW(menu, MF_STRING, ID_TRAY_SNIP, snip.as_ptr());
+        AppendMenuW(menu, MF_STRING, ID_TRAY_DRAW, draw.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exit.as_ptr());
 

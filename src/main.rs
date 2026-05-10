@@ -2,9 +2,12 @@
 
 mod capture_ui;
 mod config;
+mod draw;
 mod effect;
 mod recorder;
+mod select_rect;
 mod settings;
+mod snip;
 mod startup;
 mod tray;
 mod win;
@@ -84,6 +87,7 @@ fn main() {
         .ok();
 
     tray::add(hwnd);
+    tray::taskbar_created_message();
     message_loop();
 }
 
@@ -170,8 +174,11 @@ unsafe extern "system" fn main_proc(
             0
         }
         tray::WM_TRAYICON => {
-            if tray::is_activate_message(lparam) {
-                tray::show_menu(hwnd);
+            if let Some(action) = tray::action_from_message(lparam) {
+                match action {
+                    tray::TrayAction::OpenSettings => open_settings(hwnd),
+                    tray::TrayAction::ShowMenu => tray::show_menu(hwnd),
+                }
             }
             0
         }
@@ -179,6 +186,8 @@ unsafe extern "system" fn main_proc(
             match wparam & 0xffff {
                 tray::ID_TRAY_SETTINGS => open_settings(hwnd),
                 tray::ID_TRAY_RECORD => open_record(hwnd),
+                tray::ID_TRAY_SNIP => snip::run(hwnd),
+                tray::ID_TRAY_DRAW => draw::show(),
                 tray::ID_TRAY_EXIT => {
                     DestroyWindow(hwnd);
                 }
@@ -193,6 +202,10 @@ unsafe extern "system" fn main_proc(
         WM_DESTROY => {
             cleanup(hwnd);
             PostQuitMessage(0);
+            0
+        }
+        _ if message == tray::taskbar_created_message() => {
+            tray::add(hwnd);
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -242,11 +255,19 @@ unsafe fn handle_mouse_click(lparam: LPARAM) {
     }
 
     let click = Box::from_raw(lparam as *mut MouseClick);
+    if draw::is_active() {
+        return;
+    }
+
     let Some(state) = APP_STATE.get() else {
         return;
     };
 
     let state = state.lock().expect("app state mutex poisoned");
+    if !state.config.click_effect_enabled {
+        return;
+    }
+
     let color = if click.button == BUTTON_LEFT {
         state.config.left_click_color
     } else {

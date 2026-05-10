@@ -79,6 +79,8 @@ pub enum ClickEffectKind {
 pub struct AppConfig {
     pub left_click_color: ClickColor,
     pub right_click_color: ClickColor,
+    #[serde(default = "default_click_effect_enabled")]
+    pub click_effect_enabled: bool,
     pub start_with_windows: bool,
     #[serde(default = "default_ripple_radius")]
     pub ripple_radius: i32,
@@ -107,6 +109,7 @@ impl Default for AppConfig {
         Self {
             left_click_color: ClickColor::new(0, 150, 255),
             right_click_color: ClickColor::new(255, 96, 96),
+            click_effect_enabled: true,
             start_with_windows: false,
             ripple_radius: DEFAULT_RIPPLE_RADIUS,
             gif_output_path: default_gif_output_path(),
@@ -175,6 +178,10 @@ fn default_gif_timestamp_font_size() -> i32 {
 }
 
 fn default_gif_even_size() -> bool {
+    true
+}
+
+fn default_click_effect_enabled() -> bool {
     true
 }
 

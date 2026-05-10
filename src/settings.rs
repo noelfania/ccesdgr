@@ -53,6 +53,7 @@ const ID_PREVIEW_LEFT: i32 = 2018;
 const ID_PREVIEW_RIGHT: i32 = 2019;
 const ID_RIPPLE_SPEED_VALUE: i32 = 2026;
 const ID_GIF_EVEN_SIZE: i32 = 2027;
+const ID_CLICK_EFFECT_ENABLED: i32 = 2028;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
 const ID_SWATCH_RIGHT_0: i32 = 2023;
@@ -371,6 +372,8 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                 }
             }
             PAGE_MOUSE => {
+                config.click_effect_enabled =
+                    IsDlgButtonChecked(hwnd, ID_CLICK_EFFECT_ENABLED) == BST_CHECKED;
                 let Some(left_color) = read_hex_color(hwnd, ID_LEFT_HEX, "왼쪽 클릭 효과 색상")
                 else {
                     return false;
@@ -539,6 +542,18 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         ClickEffectKind::XCrossFade => 6,
     };
     SendMessageW(effect_combo, CB_SETCURSEL, effect_index, 0);
+    content_label(hwnd, "사용", 442, 92, 48, 24);
+    let enabled_cb = content_checkbox(hwnd, ID_CLICK_EFFECT_ENABLED, "", 512, 88, 40, 24);
+    CheckDlgButton(
+        hwnd,
+        ID_CLICK_EFFECT_ENABLED,
+        if config.click_effect_enabled {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
+    );
+    remember_content(enabled_cb);
 
     // ── 왼쪽 클릭 색상 (y=128) ──────────────────────────────────────
     content_label(hwnd, "왼쪽 클릭 효과 색상", 42, 128, 190, 24);
