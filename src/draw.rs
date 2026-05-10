@@ -15,11 +15,11 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, RegisterClassExW,
-    ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, ULW_ALPHA, WM_DESTROY,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, LoadCursorW,
+    RegisterClassExW, ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, IDC_ARROW,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
+    ULW_ALPHA, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::win;
@@ -108,6 +108,7 @@ struct DrawState {
     commands: Vec<DrawCommand>,
     undo: Vec<Vec<DrawCommand>>,
     draft: Option<DraftCommand>,
+    cursor_pos: Option<POINT>,
     current_color: Rgba,
     pen_width: i32,
 }
@@ -123,6 +124,7 @@ impl DrawState {
             commands: Vec::new(),
             undo: Vec::new(),
             draft: None,
+            cursor_pos: None,
             current_color: Rgba {
                 red: 255,
                 green: 64,
@@ -165,6 +167,7 @@ pub fn show() {
         state.commands.clear();
         state.undo.clear();
         state.draft = None;
+        state.cursor_pos = current_cursor_pos(left, top);
         state.current_color = Rgba {
             red: 255,
             green: 64,
@@ -239,16 +242,18 @@ unsafe extern "system" fn draw_proc(
                     points: vec![point],
                     style,
                 });
+                state.cursor_pos = Some(point);
             }
             SetCapture(hwnd);
             render(hwnd);
             0
         }
         WM_MOUSEMOVE => {
-            let should_render = {
+            {
                 let mut state = STATE.lock().expect("draw mutex poisoned");
+                let point = point_from_lparam(lparam);
+                state.cursor_pos = Some(point);
                 if let Some(draft) = state.draft.as_mut() {
-                    let point = point_from_lparam(lparam);
                     if draft.tool == DrawTool::Free || draft.tool == DrawTool::Blur {
                         draft.points.push(point);
                     } else if draft.points.len() == 1 {
@@ -256,20 +261,17 @@ unsafe extern "system" fn draw_proc(
                     } else {
                         draft.points[1] = point;
                     }
-                    true
-                } else {
-                    false
                 }
-            };
-            if should_render {
-                render(hwnd);
             }
+            render(hwnd);
             0
         }
         WM_LBUTTONUP => {
             ReleaseCapture();
+            let point = point_from_lparam(lparam);
             let should_render = {
                 let mut state = STATE.lock().expect("draw mutex poisoned");
+                state.cursor_pos = Some(point);
                 if let Some(draft) = state.draft.take() {
                     if let Some(command) = draft.into_command() {
                         push_undo(&mut state);
@@ -301,6 +303,9 @@ unsafe extern "system" fn draw_proc(
                 let mut state = STATE.lock().expect("draw mutex poisoned");
                 let step = if delta > 0 { 1 } else { -1 };
                 state.pen_width = (state.pen_width + step).clamp(MIN_PEN_WIDTH, MAX_PEN_WIDTH);
+                state.cursor_pos = Some(screen_point_from_lparam(lparam, state.origin_x, state.origin_y));
+                drop(state);
+                render(hwnd);
                 return 0;
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
@@ -313,6 +318,7 @@ unsafe extern "system" fn draw_proc(
             state.commands.clear();
             state.undo.clear();
             state.draft = None;
+            state.cursor_pos = None;
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -365,7 +371,7 @@ pub fn is_active() -> bool {
 }
 
 unsafe fn render(hwnd: HWND) {
-    let (left, top, width, height, mut buffer, commands, draft) = {
+    let (left, top, width, height, mut buffer, commands, draft, cursor_pos, preview_style) = {
         let state = STATE.lock().expect("draw mutex poisoned");
         if state.width <= 0 || state.height <= 0 || state.background.is_empty() {
             return;
@@ -378,6 +384,11 @@ unsafe fn render(hwnd: HWND) {
             state.background.clone(),
             state.commands.clone(),
             state.draft.as_ref().map(draft_to_command),
+            state.cursor_pos,
+            DrawStyle {
+                color: state.current_color,
+                width: state.pen_width,
+            },
         )
     };
 
@@ -386,6 +397,9 @@ unsafe fn render(hwnd: HWND) {
     }
     if let Some(command) = draft {
         draw_command(&mut buffer, width, height, &command);
+    }
+    if let Some(point) = cursor_pos {
+        draw_cursor_preview(&mut buffer, width, height, point, preview_style, active_tool());
     }
 
     update_layered_window(hwnd, left, top, width, height, &buffer);
@@ -594,6 +608,118 @@ fn draw_blur_stroke(buffer: &mut [u8], width: i32, height: i32, points: &[POINT]
     }
 }
 
+fn draw_cursor_preview(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    point: POINT,
+    style: DrawStyle,
+    tool: DrawTool,
+) {
+    let preview_width = if tool == DrawTool::Blur {
+        style.width.max(12)
+    } else {
+        style.width.max(MIN_PEN_WIDTH)
+    };
+    let radius = (preview_width as f32 / 2.0).ceil() as i32;
+    let fill = if tool == DrawTool::Blur {
+        Rgba {
+            red: 112,
+            green: 112,
+            blue: 112,
+            alpha: 80,
+        }
+    } else {
+        Rgba {
+            alpha: style.color.alpha.max(80),
+            ..style.color
+        }
+    };
+
+    draw_filled_circle(buffer, width, height, point, radius, fill);
+    draw_circle_outline(
+        buffer,
+        width,
+        height,
+        point,
+        radius + 2,
+        Rgba {
+            red: 255,
+            green: 255,
+            blue: 255,
+            alpha: 230,
+        },
+    );
+    draw_circle_outline(
+        buffer,
+        width,
+        height,
+        point,
+        radius + 3,
+        Rgba {
+            red: 0,
+            green: 0,
+            blue: 0,
+            alpha: 180,
+        },
+    );
+}
+
+fn draw_filled_circle(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    center: POINT,
+    radius: i32,
+    color: Rgba,
+) {
+    let radius = radius.max(1);
+    let radius_sq = radius * radius;
+    let left = (center.x - radius).max(0);
+    let top = (center.y - radius).max(0);
+    let right = (center.x + radius).min(width - 1);
+    let bottom = (center.y + radius).min(height - 1);
+
+    for y in top..=bottom {
+        for x in left..=right {
+            let dx = x - center.x;
+            let dy = y - center.y;
+            if dx * dx + dy * dy <= radius_sq {
+                blend_pixel(buffer, width, x, y, color);
+            }
+        }
+    }
+}
+
+fn draw_circle_outline(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    center: POINT,
+    radius: i32,
+    color: Rgba,
+) {
+    let radius = radius.max(1);
+    let inner = (radius - 1).max(0);
+    let outer_sq = radius * radius;
+    let inner_sq = inner * inner;
+    let left = (center.x - radius).max(0);
+    let top = (center.y - radius).max(0);
+    let right = (center.x + radius).min(width - 1);
+    let bottom = (center.y + radius).min(height - 1);
+
+    for y in top..=bottom {
+        for x in left..=right {
+            let dx = x - center.x;
+            let dy = y - center.y;
+            let distance = dx * dx + dy * dy;
+            if distance <= outer_sq && distance >= inner_sq {
+                blend_pixel(buffer, width, x, y, color);
+            }
+        }
+    }
+}
+
 fn blur_segment(
     buffer: &mut [u8],
     source: &[u8],
@@ -698,6 +824,10 @@ fn handle_key(hwnd: HWND, key: u32) -> bool {
 
     let mut state = STATE.lock().expect("draw mutex poisoned");
     state.current_color = color;
+    drop(state);
+    unsafe {
+        render(hwnd);
+    }
     true
 }
 
@@ -802,6 +932,27 @@ fn same_point(a: POINT, b: POINT) -> bool {
 
 fn is_key_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+}
+
+fn current_cursor_pos(origin_x: i32, origin_y: i32) -> Option<POINT> {
+    let mut point = POINT { x: 0, y: 0 };
+    let success = unsafe { GetCursorPos(&mut point) } != 0;
+    if success {
+        Some(POINT {
+            x: point.x - origin_x,
+            y: point.y - origin_y,
+        })
+    } else {
+        None
+    }
+}
+
+fn screen_point_from_lparam(lparam: LPARAM, origin_x: i32, origin_y: i32) -> POINT {
+    let point = point_from_lparam(lparam);
+    POINT {
+        x: point.x - origin_x,
+        y: point.y - origin_y,
+    }
 }
 
 unsafe fn capture_screen(left: i32, top: i32, width: i32, height: i32) -> Option<Vec<u8>> {
