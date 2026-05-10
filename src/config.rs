@@ -90,6 +90,8 @@ pub struct AppConfig {
     pub show_gif_timestamp: bool,
     #[serde(default = "default_gif_timestamp_font_size")]
     pub gif_timestamp_font_size: i32,
+    #[serde(default = "default_gif_even_size")]
+    pub gif_even_size: bool,
     #[serde(default)]
     pub recent_left_colors: Vec<ClickColor>,
     #[serde(default)]
@@ -111,6 +113,7 @@ impl Default for AppConfig {
             open_folder_after_save: false,
             show_gif_timestamp: false,
             gif_timestamp_font_size: DEFAULT_GIF_TIMESTAMP_FONT_SIZE,
+            gif_even_size: true,
             recent_left_colors: Vec::new(),
             recent_right_colors: Vec::new(),
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
@@ -169,6 +172,10 @@ fn default_ripple_lifetime() -> u32 {
 
 fn default_gif_timestamp_font_size() -> i32 {
     DEFAULT_GIF_TIMESTAMP_FONT_SIZE
+}
+
+fn default_gif_even_size() -> bool {
+    true
 }
 
 fn default_click_effect_kind() -> ClickEffectKind {

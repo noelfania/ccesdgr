@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,6 +30,7 @@ const FF_MODERN: u32 = 0x30;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static STOP_SIGNAL: AtomicBool = AtomicBool::new(false);
+static LAST_FRAME_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LAST_OUTPUT: Mutex<PathBuf> = Mutex::new(PathBuf::new());
 
 pub struct CaptureRegion {
@@ -49,10 +50,12 @@ pub fn start(
         return; // 이미 녹화 중
     }
     STOP_SIGNAL.store(false, Ordering::Relaxed);
+    LAST_FRAME_COUNT.store(0, Ordering::Relaxed);
     *LAST_OUTPUT.lock().expect("recorder mutex poisoned") = output_path.clone();
 
     thread::spawn(move || {
-        record_loop(region, output_path, show_timestamp, timestamp_font_size);
+        let frame_count = record_loop(region, output_path, show_timestamp, timestamp_font_size);
+        LAST_FRAME_COUNT.store(frame_count, Ordering::Relaxed);
         RECORDING.store(false, Ordering::Relaxed);
     });
 }
@@ -69,15 +72,19 @@ pub fn last_output_path() -> PathBuf {
     LAST_OUTPUT.lock().expect("recorder mutex poisoned").clone()
 }
 
+pub fn last_frame_count() -> usize {
+    LAST_FRAME_COUNT.load(Ordering::Relaxed)
+}
+
 fn record_loop(
     region: CaptureRegion,
     output_path: PathBuf,
     show_timestamp: bool,
     timestamp_font_size: i32,
-) {
+) -> usize {
     let file = match File::create(&output_path) {
         Ok(f) => f,
-        Err(_) => return,
+        Err(_) => return 0,
     };
 
     let w = region.width.max(1) as u16;
@@ -85,14 +92,17 @@ fn record_loop(
 
     let mut encoder = match gif::Encoder::new(file, w, h, &[]) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(_) => return 0,
     };
     let _ = encoder.set_repeat(gif::Repeat::Infinite);
 
     let frame_interval = Duration::from_millis(100); // 10 FPS
+    let default_delay = frame_delay_from_duration(frame_interval);
     let recording_start = Instant::now();
     let timestamp_font_size =
         timestamp_font_size.clamp(MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE);
+    let mut pending_frame: Option<(Vec<u8>, Instant)> = None;
+    let mut frame_count = 0usize;
 
     loop {
         if STOP_SIGNAL.load(Ordering::Relaxed) {
@@ -117,10 +127,14 @@ fn record_loop(
                 .collect();
 
             if rgb.len() == w as usize * h as usize * 3 {
-                let mut frame = gif::Frame::from_rgb_speed(w, h, &rgb, 10);
-                frame.delay = 10; // 10 × 10ms = 100ms
-                if encoder.write_frame(&frame).is_err() {
-                    break;
+                if let Some((previous_rgb, previous_time)) = pending_frame.replace((rgb, frame_start))
+                {
+                    let delay = frame_delay_from_duration(frame_start.saturating_duration_since(previous_time));
+                    if write_gif_frame(&mut encoder, w, h, &previous_rgb, delay).is_err() {
+                        pending_frame = None;
+                        break;
+                    }
+                    frame_count += 1;
                 }
             }
         }
@@ -131,7 +145,37 @@ fn record_loop(
         }
     }
 
+    if let Some((rgb, frame_time)) = pending_frame {
+        let elapsed = Instant::now().saturating_duration_since(frame_time);
+        let delay = if elapsed.is_zero() {
+            default_delay
+        } else {
+            frame_delay_from_duration(elapsed)
+        };
+        if write_gif_frame(&mut encoder, w, h, &rgb, delay).is_ok() {
+            frame_count += 1;
+        }
+    }
+
     drop(encoder); // GIF 파일 완성 (flush)
+    frame_count
+}
+
+fn frame_delay_from_duration(duration: Duration) -> u16 {
+    let centiseconds = ((duration.as_millis() + 5) / 10).clamp(1, u16::MAX as u128);
+    centiseconds as u16
+}
+
+fn write_gif_frame<W: std::io::Write>(
+    encoder: &mut gif::Encoder<W>,
+    width: u16,
+    height: u16,
+    rgb: &[u8],
+    delay: u16,
+) -> Result<(), gif::EncodingError> {
+    let mut frame = gif::Frame::from_rgb_speed(width, height, rgb, 10);
+    frame.delay = delay;
+    encoder.write_frame(&frame)
 }
 
 fn capture_region(

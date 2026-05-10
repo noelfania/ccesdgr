@@ -56,6 +56,8 @@ const ID_RATIO_COMBO: i32 = 3006;
 // ── 버튼/콤보 치수 ─────────────────────────────────────────────────────────
 const BTN_W: i32 = 26;
 const BTN_H: i32 = 26;
+const COMBO_H: i32 = 22;
+const COMBO_DROPDOWN_EXTRA: i32 = 200;
 
 // ── 타입 정의 ────────────────────────────────────────────────────────────
 
@@ -414,7 +416,7 @@ unsafe fn create_controls(hwnd: HWND) {
         btn as isize
     };
 
-    let make_combo = |id: i32, x: i32, y: i32, w: i32, h: i32| -> isize {
+    let make_combo = |id: i32, x: i32, y: i32, w: i32| -> isize {
         let cls = win::to_wide("COMBOBOX");
         let combo = CreateWindowExW(
             0,
@@ -424,7 +426,7 @@ unsafe fn create_controls(hwnd: HWND) {
             x,
             y,
             w,
-            h + 200,
+            COMBO_H + COMBO_DROPDOWN_EXTRA,
             hwnd,
             id as isize as HMENU,
             instance,
@@ -446,7 +448,7 @@ unsafe fn create_controls(hwnd: HWND) {
 
     let by = geom.bar_t;
     let bty = by + (BAR_H - BTN_H) / 2;
-    let bcy = by + (BAR_H - 22) / 2;
+    let bcy = by + (BAR_H - COMBO_H) / 2;
     let win_w = geom.win_w;
 
     let cx_cancel = win_w - 4 - BTN_W;
@@ -458,9 +460,9 @@ unsafe fn create_controls(hwnd: HWND) {
     cancel_btn = make_btn(ID_CANCEL, "✕", cx_cancel, bty, BTN_W, BTN_H);
     toggle_btn = make_btn(ID_TOGGLE, "●", cx_toggle, bty, BTN_W, BTN_H);
 
-    bar_pos_ctrl = make_combo(ID_BAR_POS, cx_barpos, bcy, 65, 22);
-    ratio_ctrl = make_combo(ID_RATIO_COMBO, cx_ratio, bcy, 65, 22);
-    preset_ctrl = make_combo(ID_PRESET_COMBO, cx_preset, bcy, 85, 22);
+    bar_pos_ctrl = make_combo(ID_BAR_POS, cx_barpos, bcy, 65);
+    ratio_ctrl = make_combo(ID_RATIO_COMBO, cx_ratio, bcy, 65);
+    preset_ctrl = make_combo(ID_PRESET_COMBO, cx_preset, bcy, 85);
 
     add_str(bar_pos_ctrl, "위");
     add_str(bar_pos_ctrl, "아래");
@@ -572,7 +574,7 @@ unsafe fn update_ctrl_positions(hwnd: HWND) {
     let geom = compute_geom(sel_w, sel_h, bar_pos);
     let by = geom.bar_t;
     let bty = by + (BAR_H - BTN_H) / 2;
-    let bcy = by + (BAR_H - 22) / 2;
+    let bcy = by + (BAR_H - COMBO_H) / 2;
     let ww = geom.win_w;
 
     let cx_cancel = ww - 4 - BTN_W;
@@ -596,13 +598,37 @@ unsafe fn update_ctrl_positions(hwnd: HWND) {
         SetWindowPos(t, null_mut(), cx_toggle, bty, BTN_W, BTN_H, fl);
     }
     if !b.is_null() {
-        SetWindowPos(b, null_mut(), cx_barpos, bcy, 65, 22, fl);
+        SetWindowPos(
+            b,
+            null_mut(),
+            cx_barpos,
+            bcy,
+            65,
+            COMBO_H + COMBO_DROPDOWN_EXTRA,
+            fl,
+        );
     }
     if !r.is_null() {
-        SetWindowPos(r, null_mut(), cx_ratio, bcy, 65, 22, fl);
+        SetWindowPos(
+            r,
+            null_mut(),
+            cx_ratio,
+            bcy,
+            65,
+            COMBO_H + COMBO_DROPDOWN_EXTRA,
+            fl,
+        );
     }
     if !p.is_null() {
-        SetWindowPos(p, null_mut(), cx_preset, bcy, 85, 22, fl);
+        SetWindowPos(
+            p,
+            null_mut(),
+            cx_preset,
+            bcy,
+            85,
+            COMBO_H + COMBO_DROPDOWN_EXTRA,
+            fl,
+        );
     }
     _ = hwnd;
 }
@@ -672,7 +698,13 @@ unsafe fn paint(hwnd: HWND) {
     SetTextColor(hdc, win::colorref(180, 180, 180));
     let font = GetStockObject(DEFAULT_GUI_FONT);
     let old_font = SelectObject(hdc, font);
-    let (cap_w, cap_h) = capture_size_from_frame(sel_w, sel_h);
+    let even_size = STATE
+        .lock()
+        .expect("capture mutex poisoned")
+        .as_ref()
+        .map(|s| s.config.gif_even_size)
+        .unwrap_or(true);
+    let (cap_w, cap_h) = output_capture_size_from_frame(sel_w, sel_h, even_size);
     let size_text = win::to_wide(&format!("{}×{}", cap_w, cap_h));
     TextOutW(
         hdc,
@@ -1000,7 +1032,7 @@ unsafe fn on_record(hwnd: HWND) {
     let output_path = output_dir.join(&filename);
     let frame_w = sel.right - sel.left;
     let frame_h = sel.bottom - sel.top;
-    let (cap_w, cap_h) = capture_size_from_frame(frame_w, frame_h);
+    let (cap_w, cap_h) = output_capture_size_from_frame(frame_w, frame_h, config.gif_even_size);
 
     let region = crate::recorder::CaptureRegion {
         x: sel.left + BORDER,
@@ -1310,6 +1342,12 @@ unsafe fn poll_done(hwnd: HWND) {
         return;
     }
 
+    if crate::recorder::last_frame_count() == 0 {
+        let output_path = crate::recorder::last_output_path();
+        let _ = std::fs::remove_file(&output_path);
+        return;
+    }
+
     InvalidateRect(hwnd, null(), 1);
     UpdateWindow(hwnd);
 
@@ -1355,6 +1393,23 @@ fn read_sel_dims_pos() -> (i32, i32, BarPos) {
 
 fn capture_size_from_frame(frame_w: i32, frame_h: i32) -> (i32, i32) {
     ((frame_w - BORDER * 2).max(1), (frame_h - BORDER * 2).max(1))
+}
+
+fn output_capture_size_from_frame(frame_w: i32, frame_h: i32, even_size: bool) -> (i32, i32) {
+    let (width, height) = capture_size_from_frame(frame_w, frame_h);
+    if even_size {
+        (make_even(width), make_even(height))
+    } else {
+        (width, height)
+    }
+}
+
+fn make_even(value: i32) -> i32 {
+    if value > 1 && value % 2 != 0 {
+        value - 1
+    } else {
+        value
+    }
 }
 
 fn frame_size_from_capture(cap_w: i32, cap_h: i32) -> (i32, i32) {

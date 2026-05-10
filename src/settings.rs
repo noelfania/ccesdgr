@@ -52,6 +52,7 @@ const ID_RIGHT_HEX: i32 = 2017;
 const ID_PREVIEW_LEFT: i32 = 2018;
 const ID_PREVIEW_RIGHT: i32 = 2019;
 const ID_RIPPLE_SPEED_VALUE: i32 = 2026;
+const ID_GIF_EVEN_SIZE: i32 = 2027;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
 const ID_SWATCH_RIGHT_0: i32 = 2023;
@@ -360,6 +361,7 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                     IsDlgButtonChecked(hwnd, ID_GIF_OPEN_FOLDER) == BST_CHECKED;
                 config.show_gif_timestamp =
                     IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
+                config.gif_even_size = IsDlgButtonChecked(hwnd, ID_GIF_EVEN_SIZE) == BST_CHECKED;
                 if let Ok(size) = control_text(hwnd, ID_GIF_TIMESTAMP_SIZE)
                     .trim()
                     .parse::<i32>()
@@ -432,7 +434,7 @@ unsafe fn create_general_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "기본 설정", 16, 52, 554, 288);
+    content_group_box(hwnd, "기본 설정", 16, 52, 554, 312);
 
     content_label(hwnd, "윈도우 실행시 기동", 42, 92, 180, 24);
     content_label(
@@ -494,6 +496,19 @@ unsafe fn create_general_page(hwnd: HWND) {
         40,
         24,
     );
+
+    content_label(hwnd, "GIF 크기 짝수 보정", 42, 338, 200, 24);
+    let even_cb = content_checkbox(hwnd, ID_GIF_EVEN_SIZE, "", 512, 338, 40, 24);
+    CheckDlgButton(
+        hwnd,
+        ID_GIF_EVEN_SIZE,
+        if config.gif_even_size {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
+    );
+    remember_content(even_cb);
 }
 
 unsafe fn create_mouse_page(hwnd: HWND) {
