@@ -1,6 +1,6 @@
 # record-gif-show-mouse-click
 
-## Get start
+## Get Start
 winget install Rustlang.Rustup
 rustc --version
 cargo --version
