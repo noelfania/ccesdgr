@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gmtl-mouse-click"
+name = "ccesdgr"
 version = "0.1.12"
 dependencies = [
  "gif",

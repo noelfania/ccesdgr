@@ -9,8 +9,9 @@ alwaysApply: true
 
 | 항목 | 내용 |
 |---|---|
-| 프로젝트명 | gmtl-mouse-click |
-| 서비스명 | GMTL Mouse Click |
+| 프로젝트명 | ccesdgr |
+| 서비스명 | ccesdgr(CursorClickEffectSnipDrawGifRecord) |
+| 개발팀 | GMTL |
 | 목적 | 마우스 클릭 시각화, 화면 캡처·주석 등으로 Evidence·화면 공유 업무를 돕는다 |
 | 대상 사용자 | Windows에서 화면 동작을 보여줘야 하는 IT 업무 사용자 |
 | 플랫폼 | Windows 10/11 (Win32 네이티브) |

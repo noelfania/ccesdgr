@@ -1,11 +1,14 @@
-# record-gif-show-mouse-click
+# CCESDGR
+> CursorClickEffectSnipDrawGifRecord
 
-## Get Start
-winget install Rustlang.Rustup
-rustc --version
-cargo --version
-cargo check
-cargo build --release
+---
+
+## 1. Getting Start
+1. winget install Rustlang.Rustup
+1. rustc --version
+1. cargo --version
+1. cargo check
+1. cargo build --release
 
 
 

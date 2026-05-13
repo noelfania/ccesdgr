@@ -1,6 +1,6 @@
 # GMTL Mouse Click — 동작 구조 및 기능 사양 (상세설계)
 
-> **대상 코드**: Rust + `windows-sys` 기반 Win32 네이티브 앱. 패키지 `gmtl-mouse-click` (예: `version = "0.1.12"` — [Cargo.toml](../Cargo.toml) 기준).  
+> **대상 코드**: Rust + `windows-sys` 기반 Win32 네이티브 앱. 패키지 `ccesdgr` (예: `version = "0.1.12"` — [Cargo.toml](../Cargo.toml) 기준).  
 
 ---
 
