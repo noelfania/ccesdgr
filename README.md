@@ -1,6 +1,6 @@
 # CCESDGR
-> CursorClickEffectSnipDrawGifRecord
-
+> CursorClickEffectCaptureSnipDrawGifRecord
+Capture?
 ---
 
 ## 1. Getting Start
@@ -12,3 +12,17 @@
 
 
 
+npx skills add JuliusBrussee/caveman -a cursor
+
+/caveman
+
+.cursor/rules/01-caveman.mdc
+
+---
+alwaysApply: true
+---
+
+Use caveman style.
+Short responses.
+Minimal tokens.
+No unnecessary explanations.
