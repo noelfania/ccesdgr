@@ -22,7 +22,7 @@ pub fn run(owner: HWND) {
 
     if unsafe { copy_region_to_clipboard(owner, rect) }.is_err() {
         let title = win::to_wide("GMTL Mouse Click");
-        let message = win::to_wide("스냅샷을 클립보드에 복사하지 못했습니다.");
+        let message = win::to_wide("Failed to copy the snapshot to the clipboard.");
         unsafe {
             MessageBoxW(owner, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
         }

@@ -1,28 +1,23 @@
-# CCESDGR
-> CursorClickEffectCaptureSnipDrawGifRecord
-Capture?
----
+<p align="center">
+  <img src="assets/icon-entry-3.png" width="96" alt="ccesdgr — mouse click icon">
+</p>
 
-## 1. Getting Start
-1. winget install Rustlang.Rustup
-1. rustc --version
-1. cargo --version
-1. cargo check
-1. cargo build --release
+# ccesdgr
 
+GMTL Mouse Click — Win32 tray app for click visualization, GIF recording, snapshots, and screen annotation.
 
+App icon: `assets/icon-entry-3.png` (blue rounded rect, white cursor). Build embeds a multi-size `.ico` for the `.exe` and tray — same asset on light and dark taskbars.
 
-npx skills add JuliusBrussee/caveman -a cursor
+**Documentation:** [docs/README.md](docs/README.md)  
+**Changelog:** [CHANGELOG.md](CHANGELOG.md)
 
-/caveman
+## Quick start
 
-.cursor/rules/01-caveman.mdc
+```bash
+cargo check
+cargo build --release
+```
 
----
-alwaysApply: true
----
+Output: `target/release/ccesdgr.exe`
 
-Use caveman style.
-Short responses.
-Minimal tokens.
-No unnecessary explanations.
+See [docs/development/local-setup.md](docs/development/local-setup.md) for Rust install details.

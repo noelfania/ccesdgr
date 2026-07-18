@@ -22,19 +22,26 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SetProcessDPIAware,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, HHOOK, MB_ICONERROR, MB_OK, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_APP,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WNDCLASSEXW, WS_OVERLAPPED,
+    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, CaptureFrameConfig};
 
 const MAIN_CLASS_NAME: &str = "GMTLMouseClickMainWindow";
 const WM_MOUSE_CLICKED: u32 = WM_APP + 2;
+const HOTKEY_SNIP: i32 = 1;
+const HOTKEY_DRAW: i32 = 2;
+const VK_C: u32 = 0x43;
+const VK_A: u32 = 0x41;
 const BUTTON_LEFT: usize = 1;
 const BUTTON_RIGHT: usize = 2;
 
@@ -68,14 +75,18 @@ fn main() {
     let hwnd = create_main_window(instance);
 
     if hwnd.is_null() {
-        show_error(null_mut(), "메인 윈도우를 만들 수 없습니다.");
+        show_error(null_mut(), "Failed to create the main window.");
         return;
     }
 
     let effect_hwnd = effect::create_window();
     let mouse_hook = install_mouse_hook(instance);
     if mouse_hook.is_null() {
-        show_error(hwnd, "마우스 훅을 등록할 수 없습니다.");
+        show_error(hwnd, "Failed to register the mouse hook.");
+    }
+
+    if !register_hotkeys(hwnd) {
+        show_error(hwnd, "Failed to register global hotkeys.");
     }
 
     APP_STATE
@@ -99,12 +110,20 @@ fn enable_dpi_awareness() {
     }
 }
 
+pub fn save_capture_frame(frame: CaptureFrameConfig) {
+    if let Some(state) = APP_STATE.get() {
+        let mut state = state.lock().expect("app state mutex poisoned");
+        state.config.capture_frame = Some(frame);
+        let _ = state.config.save();
+    }
+}
+
 pub fn apply_settings(config: AppConfig) -> Result<(), String> {
     startup::set_enabled(config.start_with_windows)
-        .map_err(|error| format!("시작프로그램 설정을 저장하지 못했습니다: {error}"))?;
+        .map_err(|error| format!("Failed to save startup setting: {error}"))?;
     config
         .save()
-        .map_err(|error| format!("설정 파일을 저장하지 못했습니다: {error}"))?;
+        .map_err(|error| format!("Failed to save config file: {error}"))?;
 
     let mut config = config;
     config.clamp_values();
@@ -114,6 +133,21 @@ pub fn apply_settings(config: AppConfig) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn register_hotkeys(hwnd: HWND) -> bool {
+    let modifiers = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT;
+    unsafe {
+        RegisterHotKey(hwnd, HOTKEY_SNIP, modifiers, VK_C) != 0
+            && RegisterHotKey(hwnd, HOTKEY_DRAW, modifiers, VK_A) != 0
+    }
+}
+
+fn unregister_hotkeys(hwnd: HWND) {
+    unsafe {
+        UnregisterHotKey(hwnd, HOTKEY_SNIP);
+        UnregisterHotKey(hwnd, HOTKEY_DRAW);
+    }
 }
 
 fn create_main_window(instance: HINSTANCE) -> HWND {
@@ -197,6 +231,14 @@ unsafe extern "system" fn main_proc(
         }
         WM_MOUSE_CLICKED => {
             handle_mouse_click(lparam);
+            0
+        }
+        WM_HOTKEY => {
+            match wparam as i32 {
+                HOTKEY_SNIP => snip::run(hwnd),
+                HOTKEY_DRAW => draw::show(),
+                _ => {}
+            }
             0
         }
         WM_DESTROY => {
@@ -330,6 +372,7 @@ unsafe fn open_record(hwnd: HWND) {
 }
 
 unsafe fn cleanup(hwnd: HWND) {
+    unregister_hotkeys(hwnd);
     tray::remove(hwnd);
     capture_ui::close();
     recorder::stop();

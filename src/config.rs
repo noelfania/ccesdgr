@@ -64,6 +64,45 @@ impl ClickColor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureBarPos {
+    #[default]
+    Top,
+    Bottom,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CaptureFrameConfig {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    #[serde(default)]
+    pub bar_pos: CaptureBarPos,
+}
+
+impl CaptureFrameConfig {
+    pub fn to_rect(self) -> windows_sys::Win32::Foundation::RECT {
+        windows_sys::Win32::Foundation::RECT {
+            left: self.left,
+            top: self.top,
+            right: self.right,
+            bottom: self.bottom,
+        }
+    }
+
+    pub fn from_rect(rect: windows_sys::Win32::Foundation::RECT, bar_pos: CaptureBarPos) -> Self {
+        Self {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            bar_pos,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum ClickEffectKind {
     Ripple,
@@ -102,6 +141,8 @@ pub struct AppConfig {
     pub ripple_lifetime: u32,
     #[serde(default = "default_click_effect_kind")]
     pub click_effect_kind: ClickEffectKind,
+    #[serde(default)]
+    pub capture_frame: Option<CaptureFrameConfig>,
 }
 
 impl Default for AppConfig {
@@ -121,6 +162,7 @@ impl Default for AppConfig {
             recent_right_colors: Vec::new(),
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
             click_effect_kind: ClickEffectKind::Ripple,
+            capture_frame: None,
         }
     }
 }

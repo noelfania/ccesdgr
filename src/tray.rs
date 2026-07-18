@@ -44,7 +44,7 @@ pub fn add(hwnd: HWND) {
     let mut data = notify_data(hwnd);
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_TRAYICON;
-    data.hIcon = load_app_icon();
+    data.hIcon = load_tray_icon();
 
     let tip = win::to_wide("GMTL Mouse Click");
     for (index, value) in tip.iter().take(data.szTip.len()).enumerate() {
@@ -56,7 +56,8 @@ pub fn add(hwnd: HWND) {
     }
 }
 
-fn load_app_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+fn load_tray_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+    // 파란 배경 아이콘 — 라이트/다크 작업표시줄 공용
     let instance = unsafe { GetModuleHandleW(null()) };
     let icon = unsafe { LoadIconW(instance, win::resource_id(win::APP_ICON_ID)) };
     if icon.is_null() {
@@ -87,15 +88,15 @@ pub fn show_menu(hwnd: HWND) {
         return;
     }
 
-    let settings = win::to_wide("설정...");
+    let settings = win::to_wide("Settings...");
     let record_label = if crate::recorder::is_recording() {
-        win::to_wide("GIF 녹화 중지")
+        win::to_wide("Stop GIF Recording")
     } else {
-        win::to_wide("GIF 녹화...")
+        win::to_wide("Record GIF...")
     };
-    let snip = win::to_wide("스냅샷...");
-    let draw = win::to_wide("화면 주석");
-    let exit = win::to_wide("종료");
+    let snip = win::to_wide("Snapshot...");
+    let draw = win::to_wide("Annotate Screen");
+    let exit = win::to_wide("Exit");
 
     unsafe {
         AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settings.as_ptr());

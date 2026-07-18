@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -15,11 +15,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, LoadCursorW,
-    RegisterClassExW, ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, IDC_ARROW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
-    ULW_ALPHA, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateCursor, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
+    GetSystemMetrics, RegisterClassExW, SetCursor, ShowWindow, UpdateLayeredWindow,
+    CS_HREDRAW, CS_VREDRAW, HTCLIENT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, ULW_ALPHA, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::win;
@@ -34,6 +35,7 @@ const VK_SHIFT_KEY: i32 = 0x10;
 const VK_TAB_KEY: i32 = 0x09;
 
 static DRAW_HWND: AtomicIsize = AtomicIsize::new(0);
+static PEN_CURSOR: OnceLock<isize> = OnceLock::new();
 static STATE: Mutex<DrawState> = Mutex::new(DrawState::new());
 
 #[derive(Clone)]
@@ -184,7 +186,7 @@ pub fn show() {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(draw_proc),
         hInstance: instance,
-        hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
+        hCursor: unsafe { pen_cursor() },
         lpszClassName: class_name.as_ptr(),
         ..unsafe { zeroed() }
     };
@@ -310,6 +312,13 @@ unsafe extern "system" fn draw_proc(
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
+        WM_SETCURSOR => {
+            if win::low_word(lparam as usize) as u32 == HTCLIENT {
+                SetCursor(pen_cursor());
+                return 1;
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
         WM_DESTROY => {
             ReleaseCapture();
             DRAW_HWND.store(0, Ordering::Relaxed);
@@ -399,7 +408,9 @@ unsafe fn render(hwnd: HWND) {
         draw_command(&mut buffer, width, height, &command);
     }
     if let Some(point) = cursor_pos {
-        draw_cursor_preview(&mut buffer, width, height, point, preview_style, active_tool());
+        if active_tool() == DrawTool::Blur {
+            draw_cursor_preview(&mut buffer, width, height, point, preview_style, DrawTool::Blur);
+        }
     }
 
     update_layered_window(hwnd, left, top, width, height, &buffer);
@@ -1089,5 +1100,85 @@ fn point_from_lparam(lparam: LPARAM) -> POINT {
     POINT {
         x: (lparam as u32 & 0xffff) as i16 as i32,
         y: ((lparam as u32 >> 16) & 0xffff) as i16 as i32,
+    }
+}
+
+unsafe fn pen_cursor() -> windows_sys::Win32::UI::WindowsAndMessaging::HCURSOR {
+    *PEN_CURSOR
+        .get_or_init(|| unsafe { create_pen_cursor() as isize })
+        as windows_sys::Win32::UI::WindowsAndMessaging::HCURSOR
+}
+
+unsafe fn create_pen_cursor() -> windows_sys::Win32::UI::WindowsAndMessaging::HCURSOR {
+    const W: i32 = 32;
+    const H: i32 = 32;
+    let mut and_mask = vec![0xFFu8; (W * H / 8) as usize];
+    let mut xor_mask = vec![0u8; (W * H / 8) as usize];
+
+    for y in 0..H {
+        for x in 0..W {
+            let outline = pen_outline_pixel(x, y);
+            let body = pen_body_pixel(x, y);
+            if body || outline {
+                set_mono_cursor_bit(&mut and_mask, W, x, y, false);
+                set_mono_cursor_bit(&mut xor_mask, W, x, y, !outline);
+            }
+        }
+    }
+
+    CreateCursor(
+        GetModuleHandleW(null()),
+        5,
+        28,
+        W,
+        H,
+        and_mask.as_ptr().cast(),
+        xor_mask.as_ptr().cast(),
+    )
+}
+
+fn pen_body_pixel(x: i32, y: i32) -> bool {
+    distance_to_segment(x as f32, y as f32, 24.0, 6.0, 8.0, 26.0) <= 2.0
+        || distance_to_segment(x as f32, y as f32, 8.0, 26.0, 3.0, 30.0) <= 2.4
+}
+
+fn pen_outline_pixel(x: i32, y: i32) -> bool {
+    if pen_body_pixel(x, y) {
+        return false;
+    }
+    for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, 1), (1, -1), (-1, -1)] {
+        if pen_body_pixel(x + dx, y + dy) {
+            return true;
+        }
+    }
+    false
+}
+
+fn distance_to_segment(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    if dx == 0.0 && dy == 0.0 {
+        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+    let t = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    let proj_x = x1 + t * dx;
+    let proj_y = y1 + t * dy;
+    ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
+}
+
+fn set_mono_cursor_bit(mask: &mut [u8], width: i32, x: i32, y: i32, transparent: bool) {
+    if x < 0 || y < 0 || x >= width {
+        return;
+    }
+    let idx = (y * width + x) as usize;
+    let byte = idx / 8;
+    let bit = idx % 8;
+    if byte >= mask.len() {
+        return;
+    }
+    if transparent {
+        mask[byte] |= 1 << (7 - bit);
+    } else {
+        mask[byte] &= !(1 << (7 - bit));
     }
 }

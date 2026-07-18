@@ -1,6 +1,12 @@
-# GMTL Mouse Click — 동작 구조 및 기능 사양 (상세설계)
+---
+status: active
+audience: developer
+verified: 2026-07-04
+---
 
-> **대상 코드**: Rust + `windows-sys` 기반 Win32 네이티브 앱. 패키지 `ccesdgr` (예: `version = "0.1.12"` — [Cargo.toml](../Cargo.toml) 기준).  
+# Architecture and feature specification
+
+> **Codebase**: Rust + `windows-sys` Win32 app. Package `ccesdgr` — see [Cargo.toml](../../Cargo.toml).
 
 ---
 
@@ -14,7 +20,7 @@
 ### 1.2 런타임 특성
 
 - `#![windows_subsystem = "windows"]` — 콘솔 없이 GUI 전용 프로세스.
-- **DPI**: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 우선, 실패 시 `SetProcessDPIAware` 폴백 ([`src/main.rs`](../src/main.rs)).
+- **DPI**: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 우선, 실패 시 `SetProcessDPIAware` 폴백 ([`src/main.rs`](../../src/main.rs)).
 - **저장 경량화**: 단일 실행 파일·무설치(포터블) 지향, 외부 웹뷰/런타임 없음.
 
 ---
@@ -147,7 +153,7 @@ sequenceDiagram
 
 ### 4.3 클릭 효과 종류 (`ClickEffectKind`)
 
-설정 UI 표시명([`settings.rs`](../src/settings.rs) 콤보 순서)과 구현 대응([`effect.rs`](../src/effect.rs) `draw_static_effect`):
+설정 UI 표시명([`settings.rs`](../../src/settings.rs) 콤보 순서)과 구현 대응([`effect.rs`](../../src/effect.rs) `draw_static_effect`):
 
 | 열거값 | 설정 창 이름 | 구현 요약 |
 |--------|--------------|-----------|
@@ -180,7 +186,7 @@ flowchart TD
   taskbar_msg["TaskbarCreated 등록 메시지"] --> tray_readd["tray::add 재호출"]
 ```
 
-- **메뉴 위치**: 커서 기준, 화면 하단·작업 표시줄 근처에서 위로 펼침 보정([`tray.rs`](../src/tray.rs)).
+- **메뉴 위치**: 커서 기준, 화면 하단·작업 표시줄 근처에서 위로 펼침 보정([`tray.rs`](../../src/tray.rs)).
 - **GIF 항목 레이블**: `recorder::is_recording()`에 따라 "GIF 녹화 중지" / "GIF 녹화..." 전환.
 
 ---
@@ -206,7 +212,7 @@ flowchart TD
 
 ## 7. 스냅샷 (`snip`)
 
-- `select_rect::select_region(owner)`로 `RECT` 획득(최소 변 길이 8px 등 [`select_rect.rs`](../src/select_rect.rs) 규칙).
+- `select_rect::select_region(owner)`로 `RECT` 획득(최소 변 길이 8px 등 [`select_rect.rs`](../../src/select_rect.rs) 규칙).
 - **영역 복사 실패** 시 소유자 기준 메시지 박스.
 - **성공 시** 클립보드 `CF_BITMAP` — 비트맵 핸들 소유권은 OS에 이전.
 
@@ -249,7 +255,7 @@ flowchart TD
 | JSON 설정 | `%APPDATA%\GMTL Mouse Click\config.json`(없으면 `LOCALAPPDATA`, 폴백 `cwd`) |
 | Windows 시작 프로그램 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, 값 이름 `GMTL Mouse Click` |
 
-### 9.2 필드 및 범위 ([`config.rs`](../src/config.rs))
+### 9.2 필드 및 범위 ([`config.rs`](../../src/config.rs))
 
 | 필드 | 설명 | 기본·범위 등 |
 |------|------|----------------|
@@ -266,7 +272,7 @@ flowchart TD
 | `gif_even_size` | 출력 해상도 짝수 보정 | 기본 true |
 | `recent_left_colors` / `recent_right_colors` | 최근 색(저장 시 최대 3개로 truncate) | |
 
-### 9.3 설정 창 동작 ([`settings.rs`](../src/settings.rs))
+### 9.3 설정 창 동작 ([`settings.rs`](../../src/settings.rs))
 
 - **탭**: 기본(일반), 마우스, 정보.
 - **버튼**:
@@ -277,7 +283,7 @@ flowchart TD
 - **마우스 페이지**: 효과 사용 체크, 종류 콤보, 좌/우 색(HEX 편집·색상 대화상자), 반경·속도 슬라이더, 좌우별 최근 색 스와치(클릭 시 적용).
 - **소유 창**: 열릴 때 메인(`owner`) 비활성화, 닫을 때 복구.
 
-### 9.4 `apply_settings` ([`main.rs`](../src/main.rs))
+### 9.4 `apply_settings` ([`main.rs`](../../src/main.rs))
 
 1. `startup::set_enabled(start_with_windows)`
 2. `config.save()`
@@ -312,16 +318,16 @@ flowchart TD
 
 | 관심사 | 파일 |
 |--------|------|
-| 진입·훅·정리 | [main.rs](../src/main.rs) |
-| 트레이 | [tray.rs](../src/tray.rs) |
-| 효과 렌더 | [effect.rs](../src/effect.rs) |
-| 설정 UI·저장 호출 | [settings.rs](../src/settings.rs) |
-| 설정 스키마 | [config.rs](../src/config.rs) |
-| 시작 프로그램 | [startup.rs](../src/startup.rs) |
-| GIF UI | [capture_ui.rs](../src/capture_ui.rs) |
-| GIF 인코딩 | [recorder.rs](../src/recorder.rs) |
-| 스냅샷 | [snip.rs](../src/snip.rs), [select_rect.rs](../src/select_rect.rs) |
-| 드로우 | [draw.rs](../src/draw.rs) |
+| 진입·훅·정리 | [main.rs](../../src/main.rs) |
+| 트레이 | [tray.rs](../../src/tray.rs) |
+| 효과 렌더 | [effect.rs](../../src/effect.rs) |
+| 설정 UI·저장 호출 | [settings.rs](../../src/settings.rs) |
+| 설정 스키마 | [config.rs](../../src/config.rs) |
+| 시작 프로그램 | [startup.rs](../../src/startup.rs) |
+| GIF UI | [capture_ui.rs](../../src/capture_ui.rs) |
+| GIF 인코딩 | [recorder.rs](../../src/recorder.rs) |
+| 스냅샷 | [snip.rs](../../src/snip.rs), [select_rect.rs](../../src/select_rect.rs) |
+| 드로우 | [draw.rs](../../src/draw.rs) |
 
 ---
 

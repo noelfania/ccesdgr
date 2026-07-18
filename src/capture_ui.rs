@@ -18,14 +18,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, GetWindowRect,
     KillTimer, LoadCursorW, RegisterClassExW, SendMessageW, SetCursor, SetTimer, SetWindowPos,
     SetWindowTextW, ShowWindow, BS_PUSHBUTTON, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, SM_CXSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, SM_CYVIRTUALSCREEN,
     SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, SW_SHOWDEFAULT, WINDOW_STYLE,
     WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_MOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_TIMER, WNDCLASSEXW, WS_CHILD,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, CaptureBarPos, CaptureFrameConfig};
 use crate::win;
 
 // ── 콤보박스 상수 (windows-sys에서 직접 임포트 불가한 항목) ───────────────
@@ -148,6 +148,98 @@ fn win_pos(sel: &RECT, bar_pos: BarPos) -> (i32, i32) {
     }
 }
 
+fn bar_pos_from_config(pos: CaptureBarPos) -> BarPos {
+    match pos {
+        CaptureBarPos::Top => BarPos::Top,
+        CaptureBarPos::Bottom => BarPos::Bottom,
+    }
+}
+
+fn bar_pos_to_config(pos: BarPos) -> CaptureBarPos {
+    match pos {
+        BarPos::Top => CaptureBarPos::Top,
+        BarPos::Bottom => CaptureBarPos::Bottom,
+    }
+}
+
+fn default_capture_sel() -> (RECT, BarPos) {
+    let primary = win::primary_screen_rect();
+    let sel_w = 640_i32
+        .min(win::rect_width(&primary) - 100)
+        .max(MIN_SEL_W);
+    let sel_h = 480_i32
+        .min(win::rect_height(&primary) - 200)
+        .max(MIN_SEL_H);
+    let cx = (primary.left + primary.right) / 2;
+    let cy = (primary.top + primary.bottom) / 2;
+    (
+        RECT {
+            left: cx - sel_w / 2,
+            top: cy - sel_h / 2,
+            right: cx + sel_w / 2,
+            bottom: cy + sel_h / 2,
+        },
+        BarPos::Top,
+    )
+}
+
+fn resolve_initial_sel(config: &AppConfig) -> (RECT, BarPos) {
+    let default = default_capture_sel();
+    let Some(saved) = &config.capture_frame else {
+        return default;
+    };
+
+    let mut sel = saved.clone().to_rect();
+    let bar_pos = bar_pos_from_config(saved.bar_pos);
+    let virtual_screen = win::virtual_screen_rect();
+    let Some(inter) = win::intersect_rect(sel, virtual_screen) else {
+        return default;
+    };
+    sel = inter;
+    if !normalize_sel(&mut sel) {
+        return default;
+    }
+    (sel, bar_pos)
+}
+
+/// sel을 가상 화면 안으로 맞추고 최소 크기를 보장한다.
+fn normalize_sel(sel: &mut RECT) -> bool {
+    let screen = win::virtual_screen_rect();
+    if !win::clamp_rect_to_virtual_screen(sel) {
+        return false;
+    }
+
+    if win::rect_width(sel) < MIN_SEL_W {
+        sel.right = (sel.left + MIN_SEL_W).min(screen.right);
+        sel.left = sel.right - MIN_SEL_W;
+        if sel.left < screen.left {
+            sel.left = screen.left;
+            sel.right = sel.left + MIN_SEL_W;
+        }
+    }
+    if win::rect_height(sel) < MIN_SEL_H {
+        sel.bottom = (sel.top + MIN_SEL_H).min(screen.bottom);
+        sel.top = sel.bottom - MIN_SEL_H;
+        if sel.top < screen.top {
+            sel.top = screen.top;
+            sel.bottom = sel.top + MIN_SEL_H;
+        }
+    }
+
+    win::clamp_rect_to_virtual_screen(sel)
+        && win::rect_width(sel) >= MIN_SEL_W
+        && win::rect_height(sel) >= MIN_SEL_H
+}
+
+fn persist_capture_frame_from_state() {
+    let snapshot = STATE.lock().expect("capture mutex poisoned");
+    let Some(state) = snapshot.as_ref() else {
+        return;
+    };
+    let frame = CaptureFrameConfig::from_rect(state.sel, bar_pos_to_config(state.bar_pos));
+    crate::save_capture_frame(frame);
+}
+
 // ── 정적 상태 ────────────────────────────────────────────────────────────
 static CAPTURE_HWND: AtomicIsize = AtomicIsize::new(0);
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -180,17 +272,9 @@ pub fn show(owner: HWND, config: AppConfig) {
         RegisterClassExW(&class);
     }
 
-    let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let sel_w = 640_i32.min(sw - 100).max(MIN_SEL_W);
-    let sel_h = 480_i32.min(sh - 200).max(MIN_SEL_H);
-    let sel = RECT {
-        left: (sw - sel_w) / 2,
-        top: (sh - sel_h) / 2,
-        right: (sw + sel_w) / 2,
-        bottom: (sh + sel_h) / 2,
-    };
-    let bar_pos = BarPos::Top;
+    let (sel, bar_pos) = resolve_initial_sel(&config);
+    let sel_w = sel.right - sel.left;
+    let sel_h = sel.bottom - sel.top;
     let geom = compute_geom(sel_w, sel_h, bar_pos);
     let (wx, wy) = win_pos(&sel, bar_pos);
 
@@ -209,7 +293,7 @@ pub fn show(owner: HWND, config: AppConfig) {
         bar_pos,
     });
 
-    let title = win::to_wide("GIF 녹화");
+    let title = win::to_wide("GIF Recording");
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -303,6 +387,7 @@ unsafe extern "system" fn capture_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 s.sel.top = ny + geom.fy;
                 s.sel.right = s.sel.left + w;
                 s.sel.bottom = s.sel.top + h;
+                normalize_sel(&mut s.sel);
             }
             drop(g);
             if auto_adjust_bar_pos() {
@@ -364,6 +449,7 @@ unsafe extern "system" fn capture_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             0
         }
         WM_DESTROY => {
+            persist_capture_frame_from_state();
             KillTimer(hwnd, TIMER_POLL);
             CAPTURE_HWND.store(0, Ordering::Relaxed);
             *STATE.lock().expect("capture mutex poisoned") = None;
@@ -464,15 +550,15 @@ unsafe fn create_controls(hwnd: HWND) {
     ratio_ctrl = make_combo(ID_RATIO_COMBO, cx_ratio, bcy, 65);
     preset_ctrl = make_combo(ID_PRESET_COMBO, cx_preset, bcy, 85);
 
-    add_str(bar_pos_ctrl, "위");
-    add_str(bar_pos_ctrl, "아래");
+    add_str(bar_pos_ctrl, "Top");
+    add_str(bar_pos_ctrl, "Bottom");
     let bp_idx = match bar_pos {
         BarPos::Top => 0,
         BarPos::Bottom => 1,
     };
     SendMessageW(bar_pos_ctrl as HWND, CB_SETCURSEL, bp_idx, 0);
 
-    for s in ["자유", "1:1", "4:3", "16:9", "9:16"] {
+    for s in ["Free", "1:1", "4:3", "16:9", "9:16"] {
         add_str(ratio_ctrl, s);
     }
     let ratio_idx = match aspect {
@@ -486,7 +572,7 @@ unsafe fn create_controls(hwnd: HWND) {
     SendMessageW(ratio_ctrl as HWND, CB_SETCURSEL, ratio_idx, 0);
 
     for s in [
-        "크기",
+        "Size",
         "640x480",
         "1280x720",
         "1920x1080",
@@ -718,56 +804,135 @@ unsafe fn paint(hwnd: HWND) {
     let fx = geom.fx;
     let fy = geom.fy;
 
-    // ── 프레임 테두리 (BORDER px) ────────────────────────────────────────
-    let border_color = if recording {
-        win::colorref(220, 50, 50)
+    // ── 프레임 테두리 (줄무늬) ───────────────────────────────────────────
+    let (color_a, color_b) = if recording {
+        (
+            win::colorref(220, 50, 50),
+            win::colorref(0, 0, 0),
+        )
     } else {
-        win::colorref(255, 255, 255)
+        (
+            win::colorref(255, 255, 255),
+            win::colorref(0, 0, 0),
+        )
     };
-    let bb = CreateSolidBrush(border_color);
-    FillRect(
+    paint_stripe_border(
         hdc,
-        &RECT {
-            left: fx,
-            top: fy,
-            right: fx + sel_w,
-            bottom: fy + BORDER,
-        },
-        bb,
+        fx,
+        fy,
+        sel_w,
+        sel_h,
+        BORDER,
+        color_a,
+        color_b,
     );
-    FillRect(
-        hdc,
-        &RECT {
-            left: fx,
-            top: fy + sel_h - BORDER,
-            right: fx + sel_w,
-            bottom: fy + sel_h,
-        },
-        bb,
-    );
-    FillRect(
-        hdc,
-        &RECT {
-            left: fx,
-            top: fy + BORDER,
-            right: fx + BORDER,
-            bottom: fy + sel_h - BORDER,
-        },
-        bb,
-    );
-    FillRect(
-        hdc,
-        &RECT {
-            left: fx + sel_w - BORDER,
-            top: fy + BORDER,
-            right: fx + sel_w,
-            bottom: fy + sel_h - BORDER,
-        },
-        bb,
-    );
-    DeleteObject(bb);
 
     EndPaint(hwnd, &ps);
+}
+
+unsafe fn paint_stripe_border(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    fx: i32,
+    fy: i32,
+    sel_w: i32,
+    sel_h: i32,
+    thickness: i32,
+    color_a: windows_sys::Win32::Foundation::COLORREF,
+    color_b: windows_sys::Win32::Foundation::COLORREF,
+) {
+    let stripe = thickness.max(1);
+    paint_stripe_rect(hdc, fx, fy, fx + sel_w, fy + thickness, stripe, color_a, color_b);
+    paint_stripe_rect(
+        hdc,
+        fx,
+        fy + sel_h - thickness,
+        fx + sel_w,
+        fy + sel_h,
+        stripe,
+        color_a,
+        color_b,
+    );
+    paint_stripe_rect(
+        hdc,
+        fx,
+        fy + thickness,
+        fx + thickness,
+        fy + sel_h - thickness,
+        stripe,
+        color_a,
+        color_b,
+    );
+    paint_stripe_rect(
+        hdc,
+        fx + sel_w - thickness,
+        fy + thickness,
+        fx + sel_w,
+        fy + sel_h - thickness,
+        stripe,
+        color_a,
+        color_b,
+    );
+}
+
+unsafe fn paint_stripe_rect(
+    hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    stripe: i32,
+    color_a: windows_sys::Win32::Foundation::COLORREF,
+    color_b: windows_sys::Win32::Foundation::COLORREF,
+) {
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    if width >= height {
+        let mut x = left;
+        let mut idx = 0;
+        while x < right {
+            let w = stripe.min(right - x);
+            let color = if idx % 2 == 0 { color_a } else { color_b };
+            let brush = CreateSolidBrush(color);
+            FillRect(
+                hdc,
+                &RECT {
+                    left: x,
+                    top,
+                    right: x + w,
+                    bottom,
+                },
+                brush,
+            );
+            DeleteObject(brush);
+            x += w;
+            idx += 1;
+        }
+    } else {
+        let mut y = top;
+        let mut idx = 0;
+        while y < bottom {
+            let h = stripe.min(bottom - y);
+            let color = if idx % 2 == 0 { color_a } else { color_b };
+            let brush = CreateSolidBrush(color);
+            FillRect(
+                hdc,
+                &RECT {
+                    left,
+                    top: y,
+                    right,
+                    bottom: y + h,
+                },
+                brush,
+            );
+            DeleteObject(brush);
+            y += h;
+            idx += 1;
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -923,6 +1088,10 @@ unsafe fn on_mouse_move(hwnd: HWND) {
         }
     }
 
+    if !normalize_sel(&mut sel) {
+        return;
+    }
+
     let new_w = sel.right - sel.left;
     let new_h = sel.bottom - sel.top;
     let bar_pos = {
@@ -1012,6 +1181,13 @@ unsafe fn on_toggle(hwnd: HWND) {
 }
 
 unsafe fn on_record(hwnd: HWND) {
+    {
+        let mut g = STATE.lock().expect("capture mutex poisoned");
+        if let Some(s) = g.as_mut() {
+            normalize_sel(&mut s.sel);
+        }
+    }
+
     let (sel, config) = {
         let g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_ref() {
@@ -1138,6 +1314,7 @@ unsafe fn on_preset_changed(hwnd: HWND) {
         s.sel.top = cy - frame_h / 2;
         s.sel.bottom = s.sel.top + frame_h;
         s.aspect = new_aspect;
+        normalize_sel(&mut s.sel);
         s.ratio_ctrl as HWND
     };
     if !ratio_ctrl_h.is_null() {
@@ -1188,6 +1365,7 @@ unsafe fn on_ratio_changed(hwnd: HWND) {
             s.sel.left = cx - new_w / 2;
             s.sel.right = s.sel.left + new_w;
         }
+        normalize_sel(&mut s.sel);
     }
     refresh_capture_window(hwnd);
 }

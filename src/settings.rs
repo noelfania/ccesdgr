@@ -111,7 +111,7 @@ pub fn show(owner: HWND, config: &AppConfig) {
         RegisterClassExW(&class);
     }
 
-    let title = win::to_wide("GMTL Mouse Click 설정");
+    let title = win::to_wide("GMTL Mouse Click Settings");
     let hwnd = unsafe {
         CreateWindowExW(
             0,
@@ -267,14 +267,14 @@ unsafe fn create_controls(hwnd: HWND) {
     *CURRENT_CONFIG.lock().expect("settings mutex poisoned") = Some(config.clone());
     *CURRENT_PAGE.lock().expect("settings page mutex poisoned") = PAGE_GENERAL;
 
-    button(hwnd, ID_NAV_GENERAL, "기본", 16, 14, 72, 28, false);
-    button(hwnd, ID_NAV_MOUSE, "마우스", 88, 14, 82, 28, false);
-    button(hwnd, ID_NAV_INFO, "정보", 170, 14, 72, 28, false);
+    button(hwnd, ID_NAV_GENERAL, "General", 16, 14, 72, 28, false);
+    button(hwnd, ID_NAV_MOUSE, "Mouse", 88, 14, 82, 28, false);
+    button(hwnd, ID_NAV_INFO, "Info", 170, 14, 72, 28, false);
 
-    button(hwnd, ID_RESET, "초기화", 16, 374, 86, 28, false);
-    button(hwnd, ID_CONFIRM, "확인", 320, 374, 78, 28, true);
-    button(hwnd, ID_CANCEL, "취소", 406, 374, 78, 28, false);
-    button(hwnd, ID_APPLY, "적용", 492, 374, 78, 28, false);
+    button(hwnd, ID_RESET, "Reset", 16, 374, 86, 28, false);
+    button(hwnd, ID_CONFIRM, "OK", 320, 374, 78, 28, true);
+    button(hwnd, ID_CANCEL, "Cancel", 406, 374, 78, 28, false);
+    button(hwnd, ID_APPLY, "Apply", 492, 374, 78, 28, false);
 
     show_page(hwnd, PAGE_GENERAL);
 }
@@ -296,7 +296,7 @@ unsafe fn apply_settings_from_window(hwnd: HWND) -> bool {
         .expect("settings mutex poisoned")
         .clone()
     else {
-        error(hwnd, "설정 상태를 읽을 수 없습니다.");
+        error(hwnd, "Unable to read the settings state.");
         return false;
     };
 
@@ -374,11 +374,11 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
             PAGE_MOUSE => {
                 config.click_effect_enabled =
                     IsDlgButtonChecked(hwnd, ID_CLICK_EFFECT_ENABLED) == BST_CHECKED;
-                let Some(left_color) = read_hex_color(hwnd, ID_LEFT_HEX, "왼쪽 클릭 효과 색상")
+                let Some(left_color) = read_hex_color(hwnd, ID_LEFT_HEX, "Left click effect color")
                 else {
                     return false;
                 };
-                let Some(right_color) = read_hex_color(hwnd, ID_RIGHT_HEX, "오른쪽 클릭 효과 색상")
+                let Some(right_color) = read_hex_color(hwnd, ID_RIGHT_HEX, "Right click effect color")
                 else {
                     return false;
                 };
@@ -437,12 +437,12 @@ unsafe fn create_general_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "기본 설정", 16, 52, 554, 312);
+    content_group_box(hwnd, "General Settings", 16, 52, 554, 312);
 
-    content_label(hwnd, "윈도우 실행시 기동", 42, 92, 180, 24);
+    content_label(hwnd, "Start with Windows", 42, 92, 180, 24);
     content_label(
         hwnd,
-        "체크하면 다음 Windows 로그인부터 자동으로 실행됩니다.",
+        "When checked, the app starts automatically after the next Windows sign-in.",
         42,
         118,
         420,
@@ -460,10 +460,10 @@ unsafe fn create_general_page(hwnd: HWND) {
     );
     remember_content(startup_cb);
 
-    content_label(hwnd, "GIF 저장 폴더", 42, 162, 140, 24);
+    content_label(hwnd, "GIF output folder", 42, 162, 140, 24);
     content_edit(hwnd, ID_GIF_PATH, &config.gif_output_path, 42, 188, 490, 24);
 
-    content_label(hwnd, "저장 후 폴더 열기", 42, 228, 200, 24);
+    content_label(hwnd, "Open folder after save", 42, 228, 200, 24);
     let open_cb = content_checkbox(hwnd, ID_GIF_OPEN_FOLDER, "", 512, 228, 40, 24);
     CheckDlgButton(
         hwnd,
@@ -476,7 +476,7 @@ unsafe fn create_general_page(hwnd: HWND) {
     );
     remember_content(open_cb);
 
-    content_label(hwnd, "GIF에 경과시간 표시", 42, 270, 200, 24);
+    content_label(hwnd, "Show elapsed time on GIF", 42, 270, 200, 24);
     let timestamp_cb = content_checkbox(hwnd, ID_GIF_TIMESTAMP, "", 512, 270, 40, 24);
     CheckDlgButton(
         hwnd,
@@ -489,7 +489,7 @@ unsafe fn create_general_page(hwnd: HWND) {
     );
     remember_content(timestamp_cb);
 
-    content_label(hwnd, "경과시간 글자 크기 (8-24)", 42, 308, 220, 24);
+    content_label(hwnd, "Elapsed time font size (8-24)", 42, 308, 220, 24);
     content_edit(
         hwnd,
         ID_GIF_TIMESTAMP_SIZE,
@@ -500,7 +500,7 @@ unsafe fn create_general_page(hwnd: HWND) {
         24,
     );
 
-    content_label(hwnd, "GIF 크기 짝수 보정", 42, 338, 200, 24);
+    content_label(hwnd, "Force even GIF dimensions", 42, 338, 200, 24);
     let even_cb = content_checkbox(hwnd, ID_GIF_EVEN_SIZE, "", 512, 338, 40, 24);
     CheckDlgButton(
         hwnd,
@@ -521,17 +521,17 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "마우스 설정", 16, 52, 554, 300);
+    content_group_box(hwnd, "Mouse Settings", 16, 52, 554, 300);
 
-    content_label(hwnd, "클릭 효과", 42, 92, 120, 24);
+    content_label(hwnd, "Click effect", 42, 92, 120, 24);
     let effect_combo = content_combo(hwnd, ID_CLICK_EFFECT_KIND, 240, 88, 180, 120);
-    combo_add(effect_combo, "물결파장");
-    combo_add(effect_combo, "채워진 원 페이드");
-    combo_add(effect_combo, "뚫린 십자 페이드");
-    combo_add(effect_combo, "원호 페이드");
-    combo_add(effect_combo, "원호와 점 페이드");
-    combo_add(effect_combo, "십자 페이드");
-    combo_add(effect_combo, "X자 페이드");
+    combo_add(effect_combo, "Ripple");
+    combo_add(effect_combo, "Filled Fade");
+    combo_add(effect_combo, "Filled Cross Fade");
+    combo_add(effect_combo, "Arc Fade");
+    combo_add(effect_combo, "Arc Dot Fade");
+    combo_add(effect_combo, "Cross Fade");
+    combo_add(effect_combo, "X Cross Fade");
     let effect_index = match config.click_effect_kind {
         ClickEffectKind::Ripple => 0,
         ClickEffectKind::FilledFade => 1,
@@ -542,7 +542,7 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         ClickEffectKind::XCrossFade => 6,
     };
     SendMessageW(effect_combo, CB_SETCURSEL, effect_index, 0);
-    content_label(hwnd, "사용", 442, 92, 48, 24);
+    content_label(hwnd, "On", 442, 92, 48, 24);
     let enabled_cb = content_checkbox(hwnd, ID_CLICK_EFFECT_ENABLED, "", 512, 88, 40, 24);
     CheckDlgButton(
         hwnd,
@@ -556,7 +556,7 @@ unsafe fn create_mouse_page(hwnd: HWND) {
     remember_content(enabled_cb);
 
     // ── 왼쪽 클릭 색상 (y=128) ──────────────────────────────────────
-    content_label(hwnd, "왼쪽 클릭 효과 색상", 42, 128, 190, 24);
+    content_label(hwnd, "Left click effect color", 42, 128, 190, 24);
     content_color_preview(hwnd, ID_PREVIEW_LEFT, 240, 124, 28, 24);
     content_edit(
         hwnd,
@@ -568,10 +568,10 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         24,
     );
     content_swatches(hwnd, ID_SWATCH_LEFT_0, 362, 127);
-    content_button(hwnd, ID_LEFT_COLOR, "색상 선택", 442, 124, 96, 26, false);
+    content_button(hwnd, ID_LEFT_COLOR, "Pick Color", 442, 124, 96, 26, false);
 
     // ── 오른쪽 클릭 색상 (y=172) ──────────────────────────────────
-    content_label(hwnd, "오른쪽 클릭 효과 색상", 42, 172, 190, 24);
+    content_label(hwnd, "Right click effect color", 42, 172, 190, 24);
     content_color_preview(hwnd, ID_PREVIEW_RIGHT, 240, 168, 28, 24);
     content_edit(
         hwnd,
@@ -583,10 +583,10 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         24,
     );
     content_swatches(hwnd, ID_SWATCH_RIGHT_0, 362, 171);
-    content_button(hwnd, ID_RIGHT_COLOR, "색상 선택", 442, 168, 96, 26, false);
+    content_button(hwnd, ID_RIGHT_COLOR, "Pick Color", 442, 168, 96, 26, false);
 
     // ── 효과 반지름 (y=216) ─────────────────────────────────────
-    content_label(hwnd, "효과 반지름", 42, 216, 180, 24);
+    content_label(hwnd, "Effect radius", 42, 216, 180, 24);
     content_edit(
         hwnd,
         ID_RIPPLE_RADIUS,
@@ -606,8 +606,8 @@ unsafe fn create_mouse_page(hwnd: HWND) {
     );
 
     // ── 효과 속도 (y=252) ────────────────────────────────────────
-    content_label(hwnd, "효과 속도", 42, 256, 100, 24);
-    content_label(hwnd, "느림", 146, 283, 30, 20);
+    content_label(hwnd, "Effect speed", 42, 256, 100, 24);
+    content_label(hwnd, "Slow", 146, 283, 30, 20);
     // 트랙바: 느림←→빠름 (슬라이더 값 ↑ = 빠름 = lifetime ↓)
     let track_cls = win::to_wide("msctls_trackbar32");
     let track = CreateWindowExW(
@@ -641,27 +641,44 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         50,
         24,
     );
-    content_label(hwnd, "빠름", 432, 283, 30, 20);
+    content_label(hwnd, "Fast", 432, 283, 30, 20);
     content_label(hwnd, "10 ~ 60", 516, 256, 48, 20);
 }
 
 unsafe fn create_info_page(hwnd: HWND) {
-    content_group_box(hwnd, "프로그램 정보", 16, 52, 554, 218);
+    content_group_box(hwnd, "About", 16, 52, 554, 268);
     content_label(hwnd, "GMTL Mouse Click", 42, 92, 220, 24);
     content_label(
         hwnd,
-        "마우스 클릭 위치에 원형 파장 효과를 표시합니다.",
+        "Shows circular ripple effects at mouse click locations.",
         42,
         126,
+        480,
+        24,
+    );
+    content_label(
+        hwnd,
+        "Open settings or exit from the tray icon.",
+        42,
+        156,
+        460,
+        24,
+    );
+    content_label(hwnd, "Shortcuts", 42, 196, 120, 24);
+    content_label(
+        hwnd,
+        "Ctrl+Alt+Shift+C — Snapshot to clipboard",
+        42,
+        222,
         420,
         24,
     );
     content_label(
         hwnd,
-        "트레이 아이콘에서 설정창을 다시 열거나 종료할 수 있습니다.",
+        "Ctrl+Alt+Shift+A — Screen annotation",
         42,
-        156,
-        460,
+        248,
+        420,
         24,
     );
 }
@@ -1092,13 +1109,13 @@ unsafe fn set_control_text(hwnd: HWND, id: i32, text: &str) {
 unsafe fn read_hex_color(hwnd: HWND, id: i32, label: &str) -> Option<ClickColor> {
     let text = control_text(hwnd, id);
     ClickColor::from_hex(&text).or_else(|| {
-        error(hwnd, &format!("{label}은 #RRGGBB 형식으로 입력하세요."));
+        error(hwnd, &format!("{label} must be in #RRGGBB format."));
         None
     })
 }
 
 unsafe fn error(hwnd: HWND, message: &str) {
-    let title = win::to_wide("설정 오류");
+    let title = win::to_wide("Settings Error");
     let message = win::to_wide(message);
     MessageBoxW(hwnd, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
 }

@@ -60,7 +60,7 @@ alwaysApply: true
 ### 2.2 시스템 아키텍처
 
 - **구조**: 히든 메인 창 + 메시지 루프, `WH_MOUSE_LL` 훅이 메인 스레드로 클릭 이벤트 전달, 별도 레이어드 창에서 클릭 효과 렌더.
-- **모듈 맵·시퀀스·기능 사양**: [doc/app-detailed-design.md](doc/app-detailed-design.md) 를 우선 참고한다.
+- **모듈 맵·시퀀스·기능 사양**: [docs/reference/architecture.md](docs/reference/architecture.md) 를 우선 참고한다.
 
 ---
 
