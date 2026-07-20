@@ -27,6 +27,7 @@ Facts only — no procedures.
 | `ripple_lifetime` | 10–60, default 28 |
 | `click_effect_kind` | enum, default Ripple |
 | `gif_output_path` | default `%USERPROFILE%\Downloads` |
+| `ask_gif_save_path` | default false — prompt Save As after recording |
 | `open_folder_after_save` | default false |
 | `show_gif_timestamp` | default false |
 | `gif_timestamp_font_size` | 8–24, default 14 |

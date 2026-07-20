@@ -19,6 +19,9 @@ use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{
+    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX,
+};
 use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -69,6 +72,7 @@ enum MousePhase {
 
 fn main() {
     enable_dpi_awareness();
+    init_common_controls();
 
     let config = AppConfig::load();
     let instance = unsafe { GetModuleHandleW(null()) };
@@ -107,6 +111,17 @@ fn enable_dpi_awareness() {
         if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0 {
             SetProcessDPIAware();
         }
+    }
+}
+
+/// ComCtl32 v6 테마 컨트롤 등록 (매니페스트 + InitCommonControlsEx)
+fn init_common_controls() {
+    let icc = INITCOMMONCONTROLSEX {
+        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES,
+    };
+    unsafe {
+        InitCommonControlsEx(&icc);
     }
 }
 

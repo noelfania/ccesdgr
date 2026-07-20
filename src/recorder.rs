@@ -72,6 +72,10 @@ pub fn last_output_path() -> PathBuf {
     LAST_OUTPUT.lock().expect("recorder mutex poisoned").clone()
 }
 
+pub fn set_last_output_path(path: PathBuf) {
+    *LAST_OUTPUT.lock().expect("recorder mutex poisoned") = path;
+}
+
 pub fn last_frame_count() -> usize {
     LAST_FRAME_COUNT.load(Ordering::Relaxed)
 }

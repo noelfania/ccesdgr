@@ -127,6 +127,9 @@ pub struct AppConfig {
     pub gif_output_path: String,
     #[serde(default)]
     pub open_folder_after_save: bool,
+    /// 녹화 종료 후 저장 위치/파일명 대화상자
+    #[serde(default)]
+    pub ask_gif_save_path: bool,
     #[serde(default)]
     pub show_gif_timestamp: bool,
     #[serde(default = "default_gif_timestamp_font_size")]
@@ -155,6 +158,7 @@ impl Default for AppConfig {
             ripple_radius: DEFAULT_RIPPLE_RADIUS,
             gif_output_path: default_gif_output_path(),
             open_folder_after_save: false,
+            ask_gif_save_path: false,
             show_gif_timestamp: false,
             gif_timestamp_font_size: DEFAULT_GIF_TIMESTAMP_FONT_SIZE,
             gif_even_size: true,

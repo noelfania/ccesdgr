@@ -43,6 +43,7 @@ const ID_CANCEL: i32 = 2007;
 const ID_APPLY: i32 = 2008;
 const ID_GIF_PATH: i32 = 2010;
 const ID_GIF_OPEN_FOLDER: i32 = 2011;
+const ID_GIF_ASK_SAVE: i32 = 2029;
 const ID_GIF_TIMESTAMP: i32 = 2012;
 const ID_GIF_TIMESTAMP_SIZE: i32 = 2013;
 const ID_RIPPLE_SPEED: i32 = 2014;
@@ -121,7 +122,7 @@ pub fn show(owner: HWND, config: &AppConfig) {
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             620,
-            445,
+            485,
             owner,
             null_mut(),
             instance,
@@ -360,6 +361,8 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                 }
                 config.open_folder_after_save =
                     IsDlgButtonChecked(hwnd, ID_GIF_OPEN_FOLDER) == BST_CHECKED;
+                config.ask_gif_save_path =
+                    IsDlgButtonChecked(hwnd, ID_GIF_ASK_SAVE) == BST_CHECKED;
                 config.show_gif_timestamp =
                     IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
                 config.gif_even_size = IsDlgButtonChecked(hwnd, ID_GIF_EVEN_SIZE) == BST_CHECKED;
@@ -437,7 +440,7 @@ unsafe fn create_general_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "General Settings", 16, 52, 554, 312);
+    content_group_box(hwnd, "General Settings", 16, 52, 554, 360);
 
     content_label(hwnd, "Start with Windows", 42, 92, 180, 24);
     content_label(
@@ -463,8 +466,21 @@ unsafe fn create_general_page(hwnd: HWND) {
     content_label(hwnd, "GIF output folder", 42, 162, 140, 24);
     content_edit(hwnd, ID_GIF_PATH, &config.gif_output_path, 42, 188, 490, 24);
 
-    content_label(hwnd, "Open folder after save", 42, 228, 200, 24);
-    let open_cb = content_checkbox(hwnd, ID_GIF_OPEN_FOLDER, "", 512, 228, 40, 24);
+    content_label(hwnd, "Ask save location when recording ends", 42, 228, 320, 24);
+    let ask_cb = content_checkbox(hwnd, ID_GIF_ASK_SAVE, "", 512, 228, 40, 24);
+    CheckDlgButton(
+        hwnd,
+        ID_GIF_ASK_SAVE,
+        if config.ask_gif_save_path {
+            BST_CHECKED
+        } else {
+            BST_UNCHECKED
+        },
+    );
+    remember_content(ask_cb);
+
+    content_label(hwnd, "Open folder after save", 42, 268, 200, 24);
+    let open_cb = content_checkbox(hwnd, ID_GIF_OPEN_FOLDER, "", 512, 268, 40, 24);
     CheckDlgButton(
         hwnd,
         ID_GIF_OPEN_FOLDER,
@@ -476,8 +492,8 @@ unsafe fn create_general_page(hwnd: HWND) {
     );
     remember_content(open_cb);
 
-    content_label(hwnd, "Show elapsed time on GIF", 42, 270, 200, 24);
-    let timestamp_cb = content_checkbox(hwnd, ID_GIF_TIMESTAMP, "", 512, 270, 40, 24);
+    content_label(hwnd, "Show elapsed time on GIF", 42, 308, 200, 24);
+    let timestamp_cb = content_checkbox(hwnd, ID_GIF_TIMESTAMP, "", 512, 308, 40, 24);
     CheckDlgButton(
         hwnd,
         ID_GIF_TIMESTAMP,
@@ -489,19 +505,19 @@ unsafe fn create_general_page(hwnd: HWND) {
     );
     remember_content(timestamp_cb);
 
-    content_label(hwnd, "Elapsed time font size (8-24)", 42, 308, 220, 24);
+    content_label(hwnd, "Elapsed time font size (8-24)", 42, 346, 220, 24);
     content_edit(
         hwnd,
         ID_GIF_TIMESTAMP_SIZE,
         &config.gif_timestamp_font_size.to_string(),
         512,
-        304,
+        342,
         40,
         24,
     );
 
-    content_label(hwnd, "Force even GIF dimensions", 42, 338, 200, 24);
-    let even_cb = content_checkbox(hwnd, ID_GIF_EVEN_SIZE, "", 512, 338, 40, 24);
+    content_label(hwnd, "Force even GIF dimensions", 42, 380, 200, 24);
+    let even_cb = content_checkbox(hwnd, ID_GIF_EVEN_SIZE, "", 512, 380, 40, 24);
     CheckDlgButton(
         hwnd,
         ID_GIF_EVEN_SIZE,

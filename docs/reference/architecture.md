@@ -20,7 +20,8 @@ verified: 2026-07-04
 ### 1.2 런타임 특성
 
 - `#![windows_subsystem = "windows"]` — 콘솔 없이 GUI 전용 프로세스.
-- **DPI**: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 우선, 실패 시 `SetProcessDPIAware` 폴백 ([`src/main.rs`](../../src/main.rs)).
+- **DPI**: `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 우선, 실패 시 `SetProcessDPIAware` 폴백 ([`src/main.rs`](../../src/main.rs)). 매니페스트에도 `PerMonitorV2` 선언.
+- **비주얼 스타일**: [`assets/app.manifest`](../../assets/app.manifest)에 Common Controls 6.0 의존성 임베드 + 기동 시 `InitCommonControlsEx` ([`build.rs`](../../build.rs), [`src/main.rs`](../../src/main.rs)).
 - **저장 경량화**: 단일 실행 파일·무설치(포터블) 지향, 외부 웹뷰/런타임 없음.
 
 ---
@@ -197,11 +198,12 @@ flowchart TD
 
 1. 트레이에서 녹화 선택 → 메인이 `capture_ui::show` 호출(이미 열려 있으면 포커스만).
 2. **`GMTLCaptureUI`** 팝업: 선택 사각형(`RECT sel`), 상·하단 툴바, 녹화/취소, 프리셋·비율 콤보 등.
-3. 녹화 시작 시 파일명 `gif-YYYYMMDD-HHMMSS.gif`, 폴더는 설정의 `gif_output_path`.
-4. 캡처 영역은 프레임 내부에서 `BORDER`(4px) 안쪽 픽셀; `gif_even_size` 켜면 출력 가로·세로를 짝수로 보정.
+3. 녹화 시작 시 파일명 `gif-YYYYMMDD-HHMMSS.gif`. `ask_gif_save_path`가 OFF면 폴더는 `gif_output_path`에 바로 저장; ON이면 `%TEMP%`에 기록 후 종료 시 Save As.
+4. 캡처 영역은 프레임 내부에서 `BORDER` 안쪽 픽셀; `gif_even_size` 켜면 출력 가로·세로를 짝수로 보정.
 5. **`recorder::start`**: 백그라운드 스레드에서 약 **100ms 간격(10 FPS)** 으로 프레임 캡처, `gif` 크레이트로 인코딩, 종료 시 flush.
 6. 중지 후 `TIMER_POLL`(200ms)로 녹화 스레드 종료 폴링 → UI 복구; **취소** 또는 **프레임 0**이면 출력 파일 삭제.
-7. `open_folder_after_save`이면 `ShellExecuteW`로 저장 폴더 탐색기 실행.
+7. `ask_gif_save_path` ON이면 `GetSaveFileNameW` — OK 시 temp→선택 경로, Cancel 시 temp 삭제(저장 안 함).
+8. `open_folder_after_save`이면 최종 저장 폴더를 `ShellExecuteW`로 연다(Save As 취소 시 생략).
 
 ### 6.2 프레임·오버레이
 
@@ -237,12 +239,13 @@ flowchart TD
 | Shift | 사각형 테두리 |
 | Tab | 타원 테두리 |
 | Ctrl+Shift | 화살표 |
-| `X` 키 누름 | 블러(스모크) 스트로크 |
+| `X` 키 누름 + 좌클릭 드래그 | 사각 영역 블러 |
+| 우클릭 드래그 | 지우개(원본 배경 복원, 펜 두께) |
 | Ctrl+마우스 휠 | 펜 두께 2~40 |
 | Ctrl+Z | 실행 취소(최대 32단계) |
-| `R,G,B,Y,O,P,W,K` (+ Shift로 반투명 variant) | 팔레트 색 |
+| `R,G,B,Y,O,P,W,K` (+ Shift로 반투명 variant) | 팔레트 색 (`K`=검정) |
 
-펜 기본 두께 5, 블러 최소 폭 12.
+펜 기본 두께 5.
 
 ---
 
@@ -265,7 +268,8 @@ flowchart TD
 | `ripple_radius` | 최대 링 반경 등 | 20~240, 기본 72 |
 | `ripple_lifetime` | 애니메이션 길이(틱 단위, 효과 타이머와 연동) | 10~60, 기본 28 |
 | `click_effect_kind` | 효과 종류 | 기본 `Ripple` |
-| `gif_output_path` | GIF 저장 폴더 | 기본 `%USERPROFILE%\Downloads` |
+| `gif_output_path` | GIF 저장 폴더 (Ask OFF) / Save As 초기 폴더 (Ask ON) | 기본 `%USERPROFILE%\Downloads` |
+| `ask_gif_save_path` | 녹화 종료 후 저장 위치 묻기 | 기본 false |
 | `open_folder_after_save` | 저장 후 탐색기 | 기본 false |
 | `show_gif_timestamp` | GIF에 경과 시간 | 기본 false |
 | `gif_timestamp_font_size` | 8~24, 기본 14 | |

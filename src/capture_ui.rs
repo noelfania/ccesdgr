@@ -39,7 +39,8 @@ const CBN_SELCHANGE: i32 = 1;
 const CLASS_NAME: &str = "GMTLCaptureUI";
 
 const BAR_H: i32 = 32; // 바 높이
-const BORDER: i32 = 4; // 캡처 프레임 테두리 두께
+const BORDER: i32 = 1; // 캡처 프레임 테두리 두께 (1px 헤어라인)
+const STRIPE_LEN: i32 = 4; // 흰/검(또는 적/검) 대시 길이 — thickness와 분리 (marching ants)
 const SHADOW: i32 = 0; // 프레임 외부 그림자 없음
 const HANDLE: i32 = 10; // 리사이즈 핸들 감지 반경
 const MIN_SEL_W: i32 = 320; // 최소 캡처 너비
@@ -90,6 +91,8 @@ struct State {
     ratio_ctrl: isize,
     is_stopping: bool,
     cancelled: bool,
+    /// 토글 ON일 때 Save As 기본 파일명
+    suggested_gif_name: String,
     config: AppConfig,
     aspect: Option<(i32, i32)>,
     bar_pos: BarPos,
@@ -288,6 +291,7 @@ pub fn show(owner: HWND, config: AppConfig) {
         ratio_ctrl: 0,
         is_stopping: false,
         cancelled: false,
+        suggested_gif_name: String::new(),
         config,
         aspect: None,
         bar_pos,
@@ -823,6 +827,7 @@ unsafe fn paint(hwnd: HWND) {
         sel_w,
         sel_h,
         BORDER,
+        STRIPE_LEN,
         color_a,
         color_b,
     );
@@ -830,6 +835,8 @@ unsafe fn paint(hwnd: HWND) {
     EndPaint(hwnd, &ps);
 }
 
+/// 1px(또는 thickness) 헤어라인 위에 흰/검 대시를 그린다.
+/// dash_len은 테두리 두께와 별개 — thickness를 dash로 쓰면 1px일 때 줄무늬가 안 보인다.
 unsafe fn paint_stripe_border(
     hdc: windows_sys::Win32::Graphics::Gdi::HDC,
     fx: i32,
@@ -837,50 +844,58 @@ unsafe fn paint_stripe_border(
     sel_w: i32,
     sel_h: i32,
     thickness: i32,
+    dash_len: i32,
     color_a: windows_sys::Win32::Foundation::COLORREF,
     color_b: windows_sys::Win32::Foundation::COLORREF,
 ) {
-    let stripe = thickness.max(1);
-    paint_stripe_rect(hdc, fx, fy, fx + sel_w, fy + thickness, stripe, color_a, color_b);
-    paint_stripe_rect(
+    let t = thickness.max(1);
+    let dash = dash_len.max(1);
+    // 상·하
+    paint_stripe_edge(hdc, fx, fy, fx + sel_w, fy + t, true, dash, color_a, color_b);
+    paint_stripe_edge(
         hdc,
         fx,
-        fy + sel_h - thickness,
+        fy + sel_h - t,
         fx + sel_w,
         fy + sel_h,
-        stripe,
+        true,
+        dash,
         color_a,
         color_b,
     );
-    paint_stripe_rect(
+    // 좌·우 (모서리는 상·하에서 이미 채움)
+    paint_stripe_edge(
         hdc,
         fx,
-        fy + thickness,
-        fx + thickness,
-        fy + sel_h - thickness,
-        stripe,
+        fy + t,
+        fx + t,
+        fy + sel_h - t,
+        false,
+        dash,
         color_a,
         color_b,
     );
-    paint_stripe_rect(
+    paint_stripe_edge(
         hdc,
-        fx + sel_w - thickness,
-        fy + thickness,
+        fx + sel_w - t,
+        fy + t,
         fx + sel_w,
-        fy + sel_h - thickness,
-        stripe,
+        fy + sel_h - t,
+        false,
+        dash,
         color_a,
         color_b,
     );
 }
 
-unsafe fn paint_stripe_rect(
+unsafe fn paint_stripe_edge(
     hdc: windows_sys::Win32::Graphics::Gdi::HDC,
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
-    stripe: i32,
+    horizontal: bool,
+    dash: i32,
     color_a: windows_sys::Win32::Foundation::COLORREF,
     color_b: windows_sys::Win32::Foundation::COLORREF,
 ) {
@@ -890,11 +905,11 @@ unsafe fn paint_stripe_rect(
         return;
     }
 
-    if width >= height {
+    if horizontal {
         let mut x = left;
         let mut idx = 0;
         while x < right {
-            let w = stripe.min(right - x);
+            let w = dash.min(right - x);
             let color = if idx % 2 == 0 { color_a } else { color_b };
             let brush = CreateSolidBrush(color);
             FillRect(
@@ -915,7 +930,7 @@ unsafe fn paint_stripe_rect(
         let mut y = top;
         let mut idx = 0;
         while y < bottom {
-            let h = stripe.min(bottom - y);
+            let h = dash.min(bottom - y);
             let color = if idx % 2 == 0 { color_a } else { color_b };
             let brush = CreateSolidBrush(color);
             FillRect(
@@ -1203,9 +1218,19 @@ unsafe fn on_record(hwnd: HWND) {
         "gif-{:04}{:02}{:02}-{:02}{:02}{:02}.gif",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
     );
-    let output_dir = std::path::PathBuf::from(&config.gif_output_path);
-    let _ = std::fs::create_dir_all(&output_dir);
-    let output_path = output_dir.join(&filename);
+    let output_path = if config.ask_gif_save_path {
+        std::env::temp_dir().join(format!("ccesdgr-{}", &filename))
+    } else {
+        let output_dir = std::path::PathBuf::from(&config.gif_output_path);
+        let _ = std::fs::create_dir_all(&output_dir);
+        output_dir.join(&filename)
+    };
+    {
+        let mut g = STATE.lock().expect("capture mutex poisoned");
+        if let Some(s) = g.as_mut() {
+            s.suggested_gif_name = filename;
+        }
+    }
     let frame_w = sel.right - sel.left;
     let frame_h = sel.bottom - sel.top;
     let (cap_w, cap_h) = output_capture_size_from_frame(frame_w, frame_h, config.gif_even_size);
@@ -1529,14 +1554,47 @@ unsafe fn poll_done(hwnd: HWND) {
     InvalidateRect(hwnd, null(), 1);
     UpdateWindow(hwnd);
 
-    let (open_folder, output_path) = {
+    let (open_folder, ask_save, initial_dir, suggested_name) = {
         let g = STATE.lock().expect("capture mutex poisoned");
         let s = g.as_ref().expect("state missing");
         (
             s.config.open_folder_after_save,
-            crate::recorder::last_output_path(),
+            s.config.ask_gif_save_path,
+            std::path::PathBuf::from(&s.config.gif_output_path),
+            s.suggested_gif_name.clone(),
         )
     };
+
+    let mut output_path = crate::recorder::last_output_path();
+    if ask_save {
+        let default_name = if suggested_name.is_empty() {
+            "recording.gif".to_string()
+        } else {
+            suggested_name
+        };
+        match win::save_gif_dialog(hwnd, &initial_dir, &default_name) {
+            Some(dest) => {
+                if dest != output_path {
+                    if std::fs::rename(&output_path, &dest).is_err() {
+                        if std::fs::copy(&output_path, &dest).is_ok() {
+                            let _ = std::fs::remove_file(&output_path);
+                        } else {
+                            let _ = std::fs::remove_file(&output_path);
+                            return;
+                        }
+                    }
+                    crate::recorder::set_last_output_path(dest.clone());
+                    output_path = dest;
+                }
+            }
+            None => {
+                // Cancel = 저장 안 함
+                let _ = std::fs::remove_file(&output_path);
+                return;
+            }
+        }
+    }
+
     if open_folder {
         if let Some(folder) = output_path.parent() {
             let path_w = win::to_wide(&folder.to_string_lossy());

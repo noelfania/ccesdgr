@@ -1,9 +1,13 @@
 use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-use std::ptr::null;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
+use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, RECT};
+use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, HWND, RECT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CXSCREEN, SM_CYSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -94,4 +98,59 @@ pub fn clamp_rect_to_virtual_screen(rect: &mut RECT) -> bool {
     } else {
         false
     }
+}
+
+/// GIF 다른 이름으로 저장. Cancel이면 None.
+pub unsafe fn save_gif_dialog(
+    owner: HWND,
+    initial_dir: &Path,
+    default_name: &str,
+) -> Option<PathBuf> {
+    let mut file_buf = vec![0u16; 1024];
+    let name_wide: Vec<u16> = OsStr::new(default_name)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let copy_len = (name_wide.len() - 1).min(file_buf.len() - 1);
+    file_buf[..copy_len].copy_from_slice(&name_wide[..copy_len]);
+
+    // GIF\0*.gif\0\0
+    let filter: Vec<u16> = "GIF\0*.gif\0\0".encode_utf16().collect();
+    let title = to_wide("Save GIF");
+    let def_ext = to_wide("gif");
+    let initial = to_wide(&initial_dir.to_string_lossy());
+
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        hInstance: null_mut(),
+        lpstrFilter: filter.as_ptr(),
+        lpstrCustomFilter: null_mut(),
+        nMaxCustFilter: 0,
+        nFilterIndex: 1,
+        lpstrFile: file_buf.as_mut_ptr(),
+        nMaxFile: file_buf.len() as u32,
+        lpstrFileTitle: null_mut(),
+        nMaxFileTitle: 0,
+        lpstrInitialDir: initial.as_ptr(),
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+        nFileOffset: 0,
+        nFileExtension: 0,
+        lpstrDefExt: def_ext.as_ptr(),
+        lCustData: 0,
+        lpfnHook: None,
+        lpTemplateName: null(),
+        pvReserved: null_mut(),
+        dwReserved: 0,
+        FlagsEx: 0,
+    };
+
+    if GetSaveFileNameW(&mut ofn) == 0 {
+        return None;
+    }
+
+    let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
+    let path = std::ffi::OsString::from_wide(&file_buf[..end]);
+    Some(PathBuf::from(path))
 }

@@ -1,31 +1,26 @@
 ---
 status: archived
 audience: developer
-verified: 2026-07-04
+verified: 2026-07-20
 ---
 
 # Incident: draw render replay performance
 
 ## Symptom
 
-Annotation mode slows as more strokes are added; drawing feels to pause then catch up.
+Annotation mode slows as more strokes are added (especially after blur); drawing feels to pause then catch up.
 
 ## Cause
 
-`render()` clones full background and all commands every frame; replays entire history. Blur strokes are especially expensive.
+`render()` cloned full background and replayed **all** commands every mouse-move frame. Blur rects re-ran expensive neighborhood averaging every frame.
 
-## Status
+## Fix (2026-07-20)
 
-**Open** — documented improvement direction (committed buffer + preview layer). Not fully implemented.
-
-## Recommended direction
-
-- `committed_buffer` for finalized strokes
-- Preview only `draft` + cursor on mouse move
-- Undo via snapshot or limited recompose
+- `DrawState.committed`: finalized strokes baked once on commit
+- `render()`: clone `committed` + composite **draft only**
+- Undo: `recompose_committed()` from `background` + `commands`
+- Mouse-move without draft skips `render` (cursor via `SetCursor` only)
 
 ## Related
 
 - `src/draw.rs`
-
-Original note: `doc/issues/draw-render-replay-performance.md`

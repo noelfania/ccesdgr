@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GIF capture frame clamps to virtual screen when dragged off-screen (no black capture padding)
 - Cursor architecture link points to `docs/reference/architecture.md`
 - App/tray icon source switched to `assets/icon-entry-3.png` (single multi-size ICO; no theme-split tray icons)
+- Embed ComCtl32 v6 application manifest (`assets/app.manifest`) and call `InitCommonControlsEx` for themed Win32 controls
+- Settings: `ask_gif_save_path` — when on, prompt for GIF filename/folder after recording ends (Cancel discards)
 
 ## [0.1.12] - (prior releases)
 
