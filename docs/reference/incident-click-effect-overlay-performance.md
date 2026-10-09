@@ -21,6 +21,5 @@ Minimal bounding rect around active effects only; clamp to virtual screen. See `
 ## Related
 
 - `src/effect.rs`
-- `src/tray.rs`
 
-Original note: `doc/issues/click-effect-fullscreen-overlay-performance.md`
+Original note: `doc/issues/click-effect-fullscreen-overlay-performance.md` (path retired — see [operations/migration/doc-folder-restructure-2026.md](../operations/migration/doc-folder-restructure-2026.md))

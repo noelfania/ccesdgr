@@ -7,10 +7,13 @@ GMTL Mouse Click (ccesdgr) — Win32 tray app for click effects, GIF recording, 
 | You want to… | Read |
 |--------------|------|
 | Set up Rust and build locally | [development/local-setup.md](development/local-setup.md) |
+| Coding conventions | [development/coding-standards.md](development/coding-standards.md) |
 | Check before pushing | [development/verify-before-push.md](development/verify-before-push.md) |
 | Understand architecture and modules | [reference/architecture.md](reference/architecture.md) |
 | See config paths and registry keys | [reference/config-storage.md](reference/config-storage.md) |
+| Build output / release profile | [reference/deployment-facts.md](reference/deployment-facts.md) |
 | See what shipped | [CHANGELOG.md](../CHANGELOG.md) at repo root |
+| Near-term direction | [planning/roadmap.md](planning/roadmap.md) |
 | See what might come next | [planning/backlog-ideas.md](planning/backlog-ideas.md) |
 
 ## Folder map
@@ -18,7 +21,7 @@ GMTL Mouse Click (ccesdgr) — Win32 tray app for click effects, GIF recording, 
 | Folder | Purpose | When to read |
 |--------|---------|--------------|
 | [development/](development/) | Local dev, coding, pre-push checks | Daily coding |
-| [operations/](operations/) | One-off ops (no routine procedures yet) | Rare migrations |
+| [operations/](operations/) | One-off ops (historical migrations) | Rare; do not re-run |
 | [planning/](planning/) | Roadmap and ideas | Before picking new work |
 | [reference/](reference/) | Facts, architecture, archived incident notes | Read-only lookup |
 

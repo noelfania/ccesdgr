@@ -22,4 +22,4 @@ When cursor is inside taskbar rect, use `menu_y = taskbar.top - 1`. See `src/tra
 
 - `src/tray.rs`
 
-Original note: `doc/issues/tray-menu-taskbar-overlap.md`
+Original note: `doc/issues/tray-menu-taskbar-overlap.md` (path retired — see [operations/migration/doc-folder-restructure-2026.md](../operations/migration/doc-folder-restructure-2026.md))

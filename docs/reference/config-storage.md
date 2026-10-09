@@ -1,26 +1,26 @@
 ---
 status: active
 audience: developer
-verified: 2026-07-04
+verified: 2026-07-25
 ---
 
 # Config and storage
 
-Facts only — no procedures.
+Facts only — no procedures. Schema SSOT for fields; behavior overview in [architecture.md](architecture.md) §9.
 
 ## config.json
 
 | Item | Value |
 |------|--------|
-| Primary path | `%APPDATA%\GMTL Mouse Click\config.json` |
-| Fallback | `%LOCALAPPDATA%\GMTL Mouse Click\config.json`, then cwd |
+| Path | `%APPDATA%\GMTL Mouse Click\config.json` |
+| Env fallback | If `APPDATA` unset → `LOCALAPPDATA`; if both unset → process cwd. Then join `GMTL Mouse Click\config.json` (single path, not multi-file search) |
 | Schema | `AppConfig` in [`src/config.rs`](../../src/config.rs) |
 
 ### AppConfig fields (summary)
 
 | Field | Notes |
 |-------|--------|
-| `left_click_color` / `right_click_color` | RGB |
+| `left_click_color` / `right_click_color` | RGB; defaults (0,150,255) / (255,96,96) |
 | `click_effect_enabled` | default true |
 | `start_with_windows` | default false |
 | `ripple_radius` | 20–240, default 72 |

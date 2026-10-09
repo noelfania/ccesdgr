@@ -36,6 +36,7 @@ alwaysApply: true
 - 저수준 마우스 훅 기반 클릭 위치 피드백(레이어드 오버레이)
 - 설정 영속화(JSON), Windows 시작 프로그램(레지스트리 Run) 옵션
 - 영역 GIF 녹화, 영역 스냅샷(클립보드 비트맵), 전체 화면 주석(드로우) 오버레이
+- 글로벌 핫키: `Ctrl+Alt+Shift+C`(스냅샷), `Ctrl+Alt+Shift+A`(주석)
 
 **Out-of-Scope (제외)**
 
@@ -53,24 +54,26 @@ alwaysApply: true
 |---|---|---|---|
 | 언어 | Rust | edition 2021 | 패키지 버전은 저장소 루트 [Cargo.toml](Cargo.toml) 기준 |
 | Win32 바인딩 | windows-sys | 0.61.x | FFI 직접 호출 |
-| 직렬화 | serde, serde_json | 1.x | 설정 파일 `config.json` |
-| GIF 인코딩 | gif | 0.13 | 화면 녹화 출력 |
-| 리소스 | winresource | 0.1.x | 아이콘 등(빌드 의존성) |
+| 직렬화 | serde, serde_json | 1.x | 설정 파일 `config.json` (`%APPDATA%\GMTL Mouse Click\`) |
+| GIF 인코딩 | gif | 0.13 | 화면 녹화 출력(~10 FPS) |
+| 리소스 | winresource | 0.1.x | 아이콘·매니페스트 등(빌드 의존성) |
 
 ### 2.2 시스템 아키텍처
 
 - **구조**: 히든 메인 창 + 메시지 루프, `WH_MOUSE_LL` 훅이 메인 스레드로 클릭 이벤트 전달, 별도 레이어드 창에서 클릭 효과 렌더.
 - **모듈 맵·시퀀스·기능 사양**: [docs/reference/architecture.md](docs/reference/architecture.md) 를 우선 참고한다.
+- **설정 스키마**: [docs/reference/config-storage.md](docs/reference/config-storage.md).
 
 ---
 
 ## 3. 어플리케이션 기능
 
 - 마우스 클릭 위치에 시각적 피드백 표시(설정에서 끄기·스타일 변경 가능)
-- GIF 화면 녹화(선택 영역)
+- GIF 화면 녹화(선택 영역, `capture_frame` 기억, 선택적 Save As)
 - 영역 스냅샷 → 클립보드(CF_BITMAP)
-- 화면 주석(드로우 오버레이)
+- 화면 주석(드로우 오버레이, 펜 커서)
 - 설정 창에서 시작 프로그램·색·효과·GIF 옵션 등 관리
+- 트레이 메뉴 및 글로벌 핫키로 스냅샷·주석 실행
 
 ---
 
@@ -79,6 +82,7 @@ alwaysApply: true
 - 변수명과 식별자는 관례적이고 읽기 쉬운 이름을 사용한다.
 - 불필요한 추상화보다 현재 구조에서 바로 읽히는 상태 이름과 함수 이름을 우선한다.
 - 주석이 꼭 필요하다면 짧고 명확한 **한글**로 작성한다.
+- **사용자에게 보이는 UI 문자열은 영어**로 유지한다.
 
 ---
 

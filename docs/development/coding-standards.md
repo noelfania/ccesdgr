@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developer
-verified: 2026-07-04
+verified: 2026-07-25
 ---
 
 # Coding standards

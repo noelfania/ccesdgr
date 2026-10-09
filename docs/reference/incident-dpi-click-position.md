@@ -23,4 +23,4 @@ Mouse hook coordinates and overlay window used different DPI awareness.
 - `src/main.rs`
 - `src/effect.rs`
 
-Original note: `doc/issues/dpi-click-position-fix.md`
+Original note: `doc/issues/dpi-click-position-fix.md` (path retired — see [operations/migration/doc-folder-restructure-2026.md](../operations/migration/doc-folder-restructure-2026.md))

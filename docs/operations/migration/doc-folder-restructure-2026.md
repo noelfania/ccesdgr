@@ -1,10 +1,12 @@
 ---
 status: archived
 audience: developer
-verified: 2026-07-04
+verified: 2026-07-25
 ---
 
 # doc/ → docs/ restructure (2026-07)
+
+> Historical only — already applied. Do not re-run.
 
 ## What changed
 

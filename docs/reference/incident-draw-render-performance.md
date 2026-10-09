@@ -24,3 +24,4 @@ Annotation mode slows as more strokes are added (especially after blur); drawing
 ## Related
 
 - `src/draw.rs`
+- Roadmap status: **Done** — see [planning/roadmap.md](../planning/roadmap.md)

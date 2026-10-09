@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developer
-verified: 2026-07-18
+verified: 2026-07-25
 ---
 
 # Deployment facts
@@ -20,7 +20,8 @@ Facts only — no deploy runbook (none for this project).
 |------|--------|
 | Command | `cargo build --release` |
 | Binary | `target/release/ccesdgr.exe` |
-| Package name | `ccesdgr` (see [Cargo.toml](../../Cargo.toml)) |
+| Package name / version | `ccesdgr` — see [Cargo.toml](../../Cargo.toml) |
+| Manifest assembly version | `assets/app.manifest` (keep in sync with package version) |
 
 ## Release profile
 
@@ -33,10 +34,19 @@ codegen-units = 1
 strip = true
 ```
 
+## Build-time assets ([`build.rs`](../../build.rs))
+
+| Source | Output |
+|--------|--------|
+| `assets/icon-entry-3.png` | Multi-size `.ico` (16/24/32/48/256), resource ID 1 |
+| `assets/draw-pen.png` | CUR + RGBA bin for tinted pen cursor |
+| `assets/app.manifest` | Embedded (DPI PerMonitorV2, ComCtl32 v6) |
+
+Build deps: `winresource`, `image` (png), `ico`.
+
 ## Runtime
 
 - No webview or large runtime bundled
-- Icon from `assets/icon-entry-3.png` at build time (`build.rs` → multi-size `.ico`, sizes 16/24/32/48/256)
 - Exe + tray share resource ID 1 (blue background — readable on light and dark taskbars)
 - Console subsystem disabled (`#![windows_subsystem = "windows"]`)
 
