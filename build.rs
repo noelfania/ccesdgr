@@ -10,12 +10,16 @@ fn main() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=assets/icon-entry-3.png");
+    println!("cargo:rerun-if-changed=assets/app-icon.png");
+    for size in SMALL_ICON_SIZES {
+        println!("cargo:rerun-if-changed=assets/app-icon-{size}.png");
+    }
     println!("cargo:rerun-if-changed=assets/draw-pen.png");
     println!("cargo:rerun-if-changed=assets/app.manifest");
 
-    let src = image::open("assets/icon-entry-3.png")
-        .expect("assets/icon-entry-3.png 읽기 실패")
+    // tools/icon/gen_icon.py 가 만든 1024 마스터 + 트레이용 소형 전용 그림
+    let src = image::open("assets/app-icon.png")
+        .expect("assets/app-icon.png 읽기 실패")
         .into_rgba8();
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -23,8 +27,8 @@ fn main() {
     fs::create_dir_all(&icon_dir).expect("아이콘 출력 폴더 생성 실패");
 
     let app_ico = icon_dir.join("app.ico");
-    // 파란 배경 PNG → 단일 멀티사이즈 ICO (exe·트레이 공용)
-    write_ico_from_rgba(&app_ico, &src, &[16, 24, 32, 48, 256]);
+    // 투명 배경 멀티사이즈 ICO (exe·트레이 공용). 16~24는 축소 대신 전용 그림 사용
+    write_ico_from_rgba(&app_ico, &src, &[16, 20, 24, 32, 40, 48, 64, 96, 128, 256]);
 
     // 드로우 펜 커서 — 클래식 BMP CUR (폴백) + 런타임 틴트용 RGBA
     let pen_cur = out_dir.join("draw_pen.cur");
@@ -143,10 +147,22 @@ fn pen_tip_hotspot(rgba: &image::RgbaImage) -> (u16, u16) {
     hot
 }
 
+/// 트레이(16px@100% ~ 24px@150%)에서 선명하도록 따로 그린 크기
+const SMALL_ICON_SIZES: [u32; 3] = [16, 20, 24];
+
 fn write_ico_from_rgba(path: &Path, src: &image::RgbaImage, sizes: &[u32]) {
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
     for &size in sizes {
-        let resized = image::imageops::resize(src, size, size, FilterType::Lanczos3);
+        let resized = if SMALL_ICON_SIZES.contains(&size) {
+            let file = format!("assets/app-icon-{size}.png");
+            let small = image::open(&file)
+                .unwrap_or_else(|_| panic!("{file} 읽기 실패"))
+                .into_rgba8();
+            assert_eq!(small.dimensions(), (size, size), "{file} 크기 불일치");
+            small
+        } else {
+            image::imageops::resize(src, size, size, FilterType::Lanczos3)
+        };
         let image = ico::IconImage::from_rgba_data(size, size, resized.into_raw());
         dir.add_entry(ico::IconDirEntry::encode(&image).expect("ICO encode 실패"));
     }

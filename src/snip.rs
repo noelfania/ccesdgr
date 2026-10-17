@@ -3,7 +3,7 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-    SelectObject, SRCCOPY,
+    SelectObject, HBITMAP, SRCCOPY,
 };
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -26,7 +26,13 @@ pub fn run(owner: HWND) {
         unsafe {
             MessageBoxW(owner, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
         }
+        return;
     }
+    crate::tray::notify(&format!(
+        "Snapshot copied to clipboard ({}×{})",
+        rect.right - rect.left,
+        rect.bottom - rect.top
+    ));
 }
 
 unsafe fn copy_region_to_clipboard(owner: HWND, rect: RECT) -> Result<(), ()> {
@@ -64,6 +70,11 @@ unsafe fn copy_region_to_clipboard(owner: HWND, rect: RECT) -> Result<(), ()> {
         return Err(());
     }
 
+    set_clipboard_bitmap(owner, bitmap)
+}
+
+/// 비트맵을 클립보드에 넣는다. 성공 시 핸들 소유권은 클립보드로, 실패 시 여기서 해제.
+pub unsafe fn set_clipboard_bitmap(owner: HWND, bitmap: HBITMAP) -> Result<(), ()> {
     if OpenClipboard(owner) == 0 {
         DeleteObject(bitmap);
         return Err(());
@@ -76,7 +87,6 @@ unsafe fn copy_region_to_clipboard(owner: HWND, rect: RECT) -> Result<(), ()> {
         DeleteObject(bitmap);
         Err(())
     } else {
-        // 성공 시 비트맵 핸들의 소유권은 클립보드로 넘어간다.
         Ok(())
     }
 }

@@ -38,7 +38,7 @@ strip = true
 
 | Source | Output |
 |--------|--------|
-| `assets/icon-entry-3.png` | Multi-size `.ico` (16/24/32/48/256), resource ID 1 |
+| `assets/app-icon.png` + `assets/app-icon-{16,20,24}.png` | Multi-size `.ico` (16/20/24 hand-tuned; 32/40/48/64/96/128/256 from 1024 master), resource ID 1. Source: `tools/icon/gen_icon.py` |
 | `assets/draw-pen.png` | CUR + RGBA bin for tinted pen cursor |
 | `assets/app.manifest` | Embedded (DPI PerMonitorV2, ComCtl32 v6) |
 

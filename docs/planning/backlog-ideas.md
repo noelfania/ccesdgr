@@ -16,7 +16,7 @@ Raw notes and open problems. **Shipped items** → [CHANGELOG.md](../../CHANGELO
 
 ## New features
 
-- User-selectable tray/app icon (build already embeds `assets/icon-entry-3.png`)
+- User-selectable tray/app icon (build embeds `assets/app-icon.png` + `app-icon-{16,20,24}.png`)
 - Clipboard snippets, mail templates
 - Nickname watermark
 - Recent captures popup (drag/copy from tray corner)
@@ -32,10 +32,8 @@ Raw notes and open problems. **Shipped items** → [CHANGELOG.md](../../CHANGELO
 - Validate on other DPI/monitor setups
 - Default scale/FPS policy (memory vs quality)
 - 1080p 15fps, 60s GIF under ~1GB RAM target
-- Drop policy: duplicate last frame instead of dropping when encoder lags
 - User-configurable FPS (default today is ~10 FPS / 100ms)
 - Min Windows 10 build TBD
-- Encoder thread safety via mutex
 
 ## Refactor ideas
 
@@ -49,6 +47,9 @@ Raw notes and open problems. **Shipped items** → [CHANGELOG.md](../../CHANGELO
 - Code signing / SmartScreen notes
 
 ## Done (see CHANGELOG / incidents)
+
+- Encoder on its own thread with bounded queue; lagging encoder slows capture instead of dropping, delays from real time
+- `CAPTUREBLT` for GIF/snapshot: not needed — verified 2026-10-17 on Windows 11 that `SRCCOPY` alone captures layered windows (click-effect overlay); adding it only risks cursor flicker
 
 - English UI, global hotkeys (`Ctrl+Alt+Shift+C` / `A`), pen cursor in draw mode
 - Striped GIF frame, virtual-screen clamp, `capture_frame` persistence

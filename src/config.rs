@@ -174,11 +174,18 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
-        let Ok(contents) = fs::read_to_string(path) else {
+        let Ok(contents) = fs::read_to_string(&path) else {
             return Self::default();
         };
 
-        let mut config: Self = serde_json::from_str(&contents).unwrap_or_default();
+        let mut config: Self = match serde_json::from_str(&contents) {
+            Ok(config) => config,
+            Err(_) => {
+                // 손상된 설정이 다음 저장 때 덮어써지지 않도록 백업해 둔다.
+                let _ = fs::copy(&path, path.with_extension("json.bak"));
+                Self::default()
+            }
+        };
         config.clamp_values();
         config
     }
@@ -192,7 +199,10 @@ impl AppConfig {
         let mut config = self.clone();
         config.clamp_values();
         let contents = serde_json::to_string_pretty(&config)?;
-        fs::write(path, contents)
+        // 임시 파일에 쓴 뒤 교체해 저장 도중 중단돼도 기존 설정이 깨지지 않게 한다.
+        let temp_path = path.with_extension("json.tmp");
+        fs::write(&temp_path, contents)?;
+        fs::rename(&temp_path, &path)
     }
 
     pub fn clamp_values(&mut self) {
@@ -242,4 +252,62 @@ pub fn config_path() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     base.join("GMTL Mouse Click").join("config.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_round_trip() {
+        let color = ClickColor::new(0x12, 0xAB, 0xFF);
+        assert_eq!(color.to_hex(), "#12ABFF");
+        let parsed = ClickColor::from_hex(" #12abff ").expect("valid hex");
+        assert_eq!((parsed.red, parsed.green, parsed.blue), (0x12, 0xAB, 0xFF));
+    }
+
+    #[test]
+    fn invalid_hex_is_rejected() {
+        assert!(ClickColor::from_hex("#12AB").is_none());
+        assert!(ClickColor::from_hex("#GGGGGG").is_none());
+        assert!(ClickColor::from_hex("").is_none());
+    }
+
+    #[test]
+    fn colorref_round_trip() {
+        let color = ClickColor::new(1, 2, 3);
+        let back = ClickColor::from_colorref(color.to_colorref());
+        assert_eq!((back.red, back.green, back.blue), (1, 2, 3));
+    }
+
+    #[test]
+    fn clamp_values_limits_ranges_and_recent_colors() {
+        let mut config = AppConfig {
+            ripple_radius: 9999,
+            ripple_lifetime: 0,
+            gif_timestamp_font_size: 100,
+            recent_left_colors: vec![ClickColor::new(0, 0, 0); 5],
+            ..AppConfig::default()
+        };
+        config.clamp_values();
+        assert_eq!(config.ripple_radius, MAX_RIPPLE_RADIUS);
+        assert_eq!(config.ripple_lifetime, MIN_RIPPLE_LIFETIME);
+        assert_eq!(config.gif_timestamp_font_size, MAX_GIF_TIMESTAMP_FONT_SIZE);
+        assert_eq!(config.recent_left_colors.len(), 3);
+    }
+
+    #[test]
+    fn missing_fields_use_defaults() {
+        // 구버전 config.json (필수 필드만) 도 읽을 수 있어야 한다.
+        let json = r#"{
+            "left_click_color": {"red": 1, "green": 2, "blue": 3},
+            "right_click_color": {"red": 4, "green": 5, "blue": 6},
+            "start_with_windows": false
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).expect("old config parses");
+        assert!(config.click_effect_enabled);
+        assert_eq!(config.ripple_radius, DEFAULT_RIPPLE_RADIUS);
+        assert_eq!(config.click_effect_kind, ClickEffectKind::Ripple);
+        assert!(config.capture_frame.is_none());
+    }
 }
