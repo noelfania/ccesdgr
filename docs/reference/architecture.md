@@ -209,6 +209,7 @@ flowchart TD
   - 등록 실패 시 실패한 조합만 나열해 경고 후 계속.
 - **녹화 중지 경로 통일**: 트레이/핫키 중지는 `capture_ui::request_stop()` → ■ 버튼과 같은 `poll_done` 저장 흐름.
 - **트레이 메뉴**: 단축키 표시, Settings 굵게(기본 항목), `Click Effects` 체크 토글(즉시 `config.json` 저장).
+- **트레이 아이콘 테마**: `win::taskbar_is_light()`(HKCU `Themes\Personalize\SystemUsesLightTheme`, 없으면 밝음)로 검정(ID 1)/흰색(ID 2) 선 아이콘 선택. `WM_SETTINGCHANGE("ImmersiveColorSet")` 수신 시 `tray::refresh_icon`.
 - **알림**: `tray::notify` / `notify_error` (`NIF_INFO` 풍선) — 스냅샷 복사, GIF 저장, 주석 복사, 오류. 녹화 중 툴팁 `… — Recording`.
 
 ---

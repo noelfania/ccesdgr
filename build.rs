@@ -10,25 +10,24 @@ fn main() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=assets/app-icon.png");
-    for size in SMALL_ICON_SIZES {
-        println!("cargo:rerun-if-changed=assets/app-icon-{size}.png");
+    for prefix in ICON_PREFIXES {
+        println!("cargo:rerun-if-changed=assets/{prefix}.png");
+        for size in SMALL_ICON_SIZES {
+            println!("cargo:rerun-if-changed=assets/{prefix}-{size}.png");
+        }
     }
     println!("cargo:rerun-if-changed=assets/draw-pen.png");
     println!("cargo:rerun-if-changed=assets/app.manifest");
-
-    // tools/icon/gen_icon.py 가 만든 1024 마스터 + 트레이용 소형 전용 그림
-    let src = image::open("assets/app-icon.png")
-        .expect("assets/app-icon.png 읽기 실패")
-        .into_rgba8();
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let icon_dir = out_dir.join("generated-icons");
     fs::create_dir_all(&icon_dir).expect("아이콘 출력 폴더 생성 실패");
 
+    // tools/icon/gen_icon.py 가 만든 선 아이콘: 검정(ID 1, exe·밝은 작업표시줄) / 흰색(ID 2, 어두운 작업표시줄)
     let app_ico = icon_dir.join("app.ico");
-    // 투명 배경 멀티사이즈 ICO (exe·트레이 공용). 16~24는 축소 대신 전용 그림 사용
-    write_ico_from_rgba(&app_ico, &src, &[16, 20, 24, 32, 40, 48, 64, 96, 128, 256]);
+    let app_dark_ico = icon_dir.join("app-dark.ico");
+    write_ico(&app_ico, "app-icon");
+    write_ico(&app_dark_ico, "app-icon-dark");
 
     // 드로우 펜 커서 — 클래식 BMP CUR (폴백) + 런타임 틴트용 RGBA
     let pen_cur = out_dir.join("draw_pen.cur");
@@ -45,7 +44,7 @@ fn main() {
         manifest.display()
     );
     let rc_path = icon_dir.join("app.rc");
-    write_resource_script(&rc_path, &app_ico, &pen_cur, &manifest);
+    write_resource_script(&rc_path, &app_ico, &app_dark_ico, &pen_cur, &manifest);
 
     let mut resource = winresource::WindowsResource::new();
     resource.set_resource_file(&rc_path.to_string_lossy());
@@ -147,21 +146,29 @@ fn pen_tip_hotspot(rgba: &image::RgbaImage) -> (u16, u16) {
     hot
 }
 
-/// 트레이(16px@100% ~ 24px@150%)에서 선명하도록 따로 그린 크기
-const SMALL_ICON_SIZES: [u32; 3] = [16, 20, 24];
+/// 아이콘 세트 (assets/{prefix}.png 1024 마스터 + {prefix}-{size}.png 소형 전용)
+const ICON_PREFIXES: [&str; 2] = ["app-icon", "app-icon-dark"];
+/// 트레이(16px@100% ~ 32px@200%)에서 선명하도록 픽셀 격자에 맞춰 따로 그린 크기
+const SMALL_ICON_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
+const ICO_SIZES: [u32; 10] = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
 
-fn write_ico_from_rgba(path: &Path, src: &image::RgbaImage, sizes: &[u32]) {
+fn write_ico(path: &Path, prefix: &str) {
+    let master = format!("assets/{prefix}.png");
+    let src = image::open(&master)
+        .unwrap_or_else(|_| panic!("{master} 읽기 실패"))
+        .into_rgba8();
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
-    for &size in sizes {
+    for size in ICO_SIZES {
         let resized = if SMALL_ICON_SIZES.contains(&size) {
-            let file = format!("assets/app-icon-{size}.png");
+            let file = format!("assets/{prefix}-{size}.png");
             let small = image::open(&file)
                 .unwrap_or_else(|_| panic!("{file} 읽기 실패"))
                 .into_rgba8();
             assert_eq!(small.dimensions(), (size, size), "{file} 크기 불일치");
             small
         } else {
-            image::imageops::resize(src, size, size, FilterType::Lanczos3)
+            // 가는 선이라 Lanczos 링잉을 피해 Triangle(면적 평균에 가까움) 사용
+            image::imageops::resize(&src, size, size, FilterType::Triangle)
         };
         let image = ico::IconImage::from_rgba_data(size, size, resized.into_raw());
         dir.add_entry(ico::IconDirEntry::encode(&image).expect("ICO encode 실패"));
@@ -170,12 +177,20 @@ fn write_ico_from_rgba(path: &Path, src: &image::RgbaImage, sizes: &[u32]) {
     dir.write(&mut file).expect("ICO 쓰기 실패");
 }
 
-fn write_resource_script(rc_path: &Path, app: &Path, pen_cur: &Path, manifest: &Path) {
+fn write_resource_script(
+    rc_path: &Path,
+    app: &Path,
+    app_dark: &Path,
+    pen_cur: &Path,
+    manifest: &Path,
+) {
     let to_rc = |p: &Path| p.to_string_lossy().replace('\\', "\\\\");
+    // 1 = 앱 아이콘(검정, exe 대표) / 2 = 어두운 작업표시줄용(흰색)
     // 101 = 드로우 펜 커서 / 1 24 = RT_MANIFEST (ComCtl32 v6 비주얼 스타일)
     let content = format!(
-        "1 ICON \"{}\"\n101 CURSOR \"{}\"\n1 24 \"{}\"\n",
+        "1 ICON \"{}\"\n2 ICON \"{}\"\n101 CURSOR \"{}\"\n1 24 \"{}\"\n",
         to_rc(app),
+        to_rc(app_dark),
         to_rc(pen_cur),
         to_rc(manifest)
     );

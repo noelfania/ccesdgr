@@ -38,7 +38,8 @@ strip = true
 
 | Source | Output |
 |--------|--------|
-| `assets/app-icon.png` + `assets/app-icon-{16,20,24}.png` | Multi-size `.ico` (16/20/24 hand-tuned; 32/40/48/64/96/128/256 from 1024 master), resource ID 1. Source: `tools/icon/gen_icon.py` |
+| `assets/app-icon.png` + `assets/app-icon-{16..48}.png` | Black line icon `.ico` (16/20/24/32/40/48 pixel-grid art; 64/96/128/256 from 1024 master), **resource ID 1** — exe icon, light taskbar |
+| `assets/app-icon-dark.png` + `assets/app-icon-dark-{16..48}.png` | White line icon `.ico`, **resource ID 2** — dark taskbar. Source for both: `tools/icon/gen_icon.py` |
 | `assets/draw-pen.png` | CUR + RGBA bin for tinted pen cursor |
 | `assets/app.manifest` | Embedded (DPI PerMonitorV2, ComCtl32 v6) |
 

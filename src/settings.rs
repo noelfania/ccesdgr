@@ -121,8 +121,8 @@ pub fn show(owner: HWND, config: &AppConfig) {
         lpfnWndProc: Some(settings_proc),
         hInstance: instance,
         hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
-        hIcon: win::app_icon(false),
-        hIconSm: win::app_icon(true),
+        hIcon: win::app_icon(false, false),
+        hIconSm: win::app_icon(true, false),
         hbrBackground: (COLOR_3DFACE + 1) as isize as _,
         lpszClassName: class_name.as_ptr(),
         ..unsafe { std::mem::zeroed() }

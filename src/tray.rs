@@ -113,8 +113,18 @@ fn copy_wide(dest: &mut [u16], text: &str) {
 }
 
 fn load_tray_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
-    // 트레이 전용 소형 그림(16/20/24)이 DPI에 맞게 선택된다
-    win::app_icon(true)
+    // 트레이 전용 소형 그림(16~48)이 DPI에 맞게 선택되고, 작업표시줄 밝기에 따라 검정/흰색 선
+    win::app_icon(true, !win::taskbar_is_light())
+}
+
+/// 테마 변경 후 트레이 아이콘 다시 적용
+pub fn refresh_icon(hwnd: HWND) {
+    let mut data = notify_data(hwnd);
+    data.uFlags = NIF_ICON;
+    data.hIcon = load_tray_icon();
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &mut data);
+    }
 }
 
 pub fn remove(hwnd: HWND) {
