@@ -21,4 +21,9 @@ cargo build --release
 - GIF frame, snapshot, and annotate flows (if touched)
 - Hotkeys if touched: `Ctrl+Alt+Shift+C` (snapshot), `Ctrl+Alt+Shift+A` (annotate)
 
-No automated test suite yet.
+## Automated tests
+
+```bash
+cargo test                 # unit tests (pure logic)
+cargo test -- --ignored    # + 1s real screen recording smoke test (needs a desktop session)
+```

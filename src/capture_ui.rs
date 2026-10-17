@@ -16,13 +16,13 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, GetWindowRect,
-    KillTimer, LoadCursorW, RegisterClassExW, SendMessageW, SetCursor, SetTimer, SetWindowPos,
+    KillTimer, LoadCursorW, MessageBoxW, RegisterClassExW, SendMessageW, SetCursor, SetTimer, SetWindowPos,
     SetWindowTextW, ShowWindow, BS_PUSHBUTTON, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, IDC_SIZENESW,
     IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, SM_CYVIRTUALSCREEN,
     SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, SW_SHOWDEFAULT, WINDOW_STYLE,
     WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_MOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_SETFONT, WM_TIMER, WNDCLASSEXW, WS_CHILD,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, MB_ICONERROR, MB_OK,
 };
 
 use crate::config::{AppConfig, CaptureBarPos, CaptureFrameConfig};
@@ -89,6 +89,7 @@ struct State {
     bar_pos_ctrl: isize,
     preset_ctrl: isize,
     ratio_ctrl: isize,
+    tooltip: isize,
     is_stopping: bool,
     cancelled: bool,
     /// 토글 ON일 때 Save As 기본 파일명
@@ -289,6 +290,7 @@ pub fn show(owner: HWND, config: AppConfig) {
         bar_pos_ctrl: 0,
         preset_ctrl: 0,
         ratio_ctrl: 0,
+        tooltip: 0,
         is_stopping: false,
         cancelled: false,
         suggested_gif_name: String::new(),
@@ -320,6 +322,28 @@ pub fn show(owner: HWND, config: AppConfig) {
             ShowWindow(hwnd, SW_SHOW);
             SetFocus(hwnd);
         }
+    }
+}
+
+/// 트레이/핫키에서 녹화 중지 요청 — 버튼의 ■와 같은 경로로 저장 흐름을 이어간다.
+pub fn request_stop() {
+    let hwnd = CAPTURE_HWND.load(Ordering::Relaxed);
+    if hwnd == 0 {
+        crate::recorder::stop();
+        return;
+    }
+    unsafe { on_stop(hwnd as HWND) };
+}
+
+pub fn is_open() -> bool {
+    CAPTURE_HWND.load(Ordering::Relaxed) != 0
+}
+
+/// 프레임이 열려 있고 녹화 전이면 녹화를 시작한다 (Ctrl+Alt+Shift+R 두 번째 누름).
+pub fn start_recording() {
+    let hwnd = CAPTURE_HWND.load(Ordering::Relaxed);
+    if hwnd != 0 && !crate::recorder::is_recording() {
+        unsafe { on_record(hwnd as HWND) };
     }
 }
 
@@ -593,9 +617,29 @@ unsafe fn create_controls(hwnd: HWND) {
         EnableWindow(cancel_btn as HWND, 0);
     }
 
+    let tooltip = win::create_tooltip(hwnd);
+    if !tooltip.is_null() {
+        win::add_tooltip(
+            tooltip,
+            hwnd,
+            toggle_btn as HWND,
+            "Start / stop recording (Ctrl+Alt+Shift+R)",
+        );
+        win::add_tooltip(
+            tooltip,
+            hwnd,
+            cancel_btn as HWND,
+            "Close (while recording: discard)",
+        );
+        win::add_tooltip(tooltip, hwnd, preset_ctrl as HWND, "Capture size preset");
+        win::add_tooltip(tooltip, hwnd, ratio_ctrl as HWND, "Lock aspect ratio");
+        win::add_tooltip(tooltip, hwnd, bar_pos_ctrl as HWND, "Toolbar position");
+    }
+
     {
         let mut g = STATE.lock().expect("capture mutex poisoned");
         if let Some(s) = g.as_mut() {
+            s.tooltip = tooltip as isize;
             s.toggle_btn = toggle_btn;
             s.cancel_btn = cancel_btn;
             s.bar_pos_ctrl = bar_pos_ctrl;
@@ -606,7 +650,7 @@ unsafe fn create_controls(hwnd: HWND) {
 }
 
 unsafe fn destroy_controls() {
-    let (t, c, b, p, r) = {
+    let (t, c, b, p, r, tip) = {
         let g = STATE.lock().expect("capture mutex poisoned");
         let s = match g.as_ref() {
             Some(s) => s,
@@ -618,9 +662,10 @@ unsafe fn destroy_controls() {
             s.bar_pos_ctrl as HWND,
             s.preset_ctrl as HWND,
             s.ratio_ctrl as HWND,
+            s.tooltip as HWND,
         )
     };
-    for h in [t, c, b, p, r] {
+    for h in [t, c, b, p, r, tip] {
         if !h.is_null() {
             DestroyWindow(h);
         }
@@ -632,6 +677,7 @@ unsafe fn destroy_controls() {
         s.bar_pos_ctrl = 0;
         s.preset_ctrl = 0;
         s.ratio_ctrl = 0;
+        s.tooltip = 0;
     }
 }
 
@@ -795,7 +841,19 @@ unsafe fn paint(hwnd: HWND) {
         .map(|s| s.config.gif_even_size)
         .unwrap_or(true);
     let (cap_w, cap_h) = output_capture_size_from_frame(sel_w, sel_h, even_size);
-    let size_text = win::to_wide(&format!("{}×{}", cap_w, cap_h));
+    let size_text = match crate::recorder::elapsed() {
+        Some(elapsed) => format!(
+            "{}×{}   ● REC {}",
+            cap_w,
+            cap_h,
+            crate::recorder::format_elapsed(elapsed)
+        ),
+        None => format!("{}×{}", cap_w, cap_h),
+    };
+    if recording {
+        SetTextColor(hdc, win::colorref(255, 120, 120));
+    }
+    let size_text = win::to_wide(&size_text);
     TextOutW(
         hdc,
         geom.bar_l + 6,
@@ -1257,6 +1315,7 @@ unsafe fn on_record(hwnd: HWND) {
     SetWindowTextW(tb, stop_txt.as_ptr());
     EnableWindow(cb, 0);
 
+    crate::tray::set_recording_tip(true);
     SetTimer(hwnd, TIMER_POLL, 200, None);
     InvalidateRect(hwnd, null(), 1);
     UpdateWindow(hwnd);
@@ -1507,17 +1566,21 @@ fn auto_adjust_bar_pos() -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 
 unsafe fn poll_done(hwnd: HWND) {
-    let (is_stopping, cancelled) = STATE
+    let cancelled = STATE
         .lock()
         .expect("capture mutex poisoned")
         .as_ref()
-        .map(|s| (s.is_stopping, s.cancelled))
-        .unwrap_or((false, false));
-    if !is_stopping || crate::recorder::is_recording() {
+        .map(|s| s.cancelled)
+        .unwrap_or(false);
+    if crate::recorder::is_recording() {
+        // 녹화 중: 툴바의 경과 시간만 갱신
+        invalidate_bar_text(hwnd);
         return;
     }
 
+    // 중지 요청(■/트레이/핫키) 또는 녹화 스레드 자체 종료(오류) 모두 여기서 마무리
     KillTimer(hwnd, TIMER_POLL);
+    crate::tray::set_recording_tip(false);
 
     let (tb, cb) = {
         let g = STATE.lock().expect("capture mutex poisoned");
@@ -1545,9 +1608,19 @@ unsafe fn poll_done(hwnd: HWND) {
         return;
     }
 
+    if let Some(message) = crate::recorder::take_last_error() {
+        let output_path = crate::recorder::last_output_path();
+        let _ = std::fs::remove_file(&output_path);
+        InvalidateRect(hwnd, null(), 1);
+        show_error(hwnd, &format!("GIF recording failed.\n{message}"));
+        return;
+    }
+
     if crate::recorder::last_frame_count() == 0 {
         let output_path = crate::recorder::last_output_path();
         let _ = std::fs::remove_file(&output_path);
+        InvalidateRect(hwnd, null(), 1);
+        crate::tray::notify("Recording stopped — no frames were captured.");
         return;
     }
 
@@ -1576,11 +1649,22 @@ unsafe fn poll_done(hwnd: HWND) {
             Some(dest) => {
                 if dest != output_path {
                     if std::fs::rename(&output_path, &dest).is_err() {
-                        if std::fs::copy(&output_path, &dest).is_ok() {
-                            let _ = std::fs::remove_file(&output_path);
-                        } else {
-                            let _ = std::fs::remove_file(&output_path);
-                            return;
+                        match std::fs::copy(&output_path, &dest) {
+                            Ok(_) => {
+                                let _ = std::fs::remove_file(&output_path);
+                            }
+                            Err(error) => {
+                                // 임시 파일은 남겨 두어 녹화를 잃지 않게 한다.
+                                show_error(
+                                    hwnd,
+                                    &format!(
+                                        "Failed to save the GIF to {}: {error}\nThe recording is kept at {}",
+                                        dest.display(),
+                                        output_path.display()
+                                    ),
+                                );
+                                return;
+                            }
                         }
                     }
                     crate::recorder::set_last_output_path(dest.clone());
@@ -1594,6 +1678,12 @@ unsafe fn poll_done(hwnd: HWND) {
             }
         }
     }
+
+    let file_name = output_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    crate::tray::notify(&format!("GIF saved: {file_name}"));
 
     if open_folder {
         if let Some(folder) = output_path.parent() {
@@ -1614,6 +1704,27 @@ unsafe fn poll_done(hwnd: HWND) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 유틸리티
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// 바 왼쪽의 크기/경과 시간 텍스트 영역만 다시 그린다 (컨트롤 깜빡임 방지).
+unsafe fn invalidate_bar_text(hwnd: HWND) {
+    let (sel_w, sel_h, bar_pos) = read_sel_dims_pos();
+    let geom = compute_geom(sel_w, sel_h, bar_pos);
+    let rect = RECT {
+        left: geom.bar_l,
+        top: geom.bar_t,
+        right: (geom.bar_l + 220).min(geom.bar_r),
+        bottom: geom.bar_b,
+    };
+    InvalidateRect(hwnd, &rect, 0);
+}
+
+fn show_error(hwnd: HWND, message: &str) {
+    let title = win::to_wide("GMTL Mouse Click");
+    let message = win::to_wide(message);
+    unsafe {
+        MessageBoxW(hwnd, message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
 
 fn read_sel_dims_pos() -> (i32, i32, BarPos) {
     let g = STATE.lock().expect("capture mutex poisoned");
@@ -1653,4 +1764,26 @@ fn frame_size_from_capture(cap_w: i32, cap_h: i32) -> (i32, i32) {
         (cap_w + BORDER * 2).max(MIN_SEL_W),
         (cap_h + BORDER * 2).max(MIN_SEL_H),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_area_excludes_border() {
+        assert_eq!(capture_size_from_frame(642, 482), (640, 480));
+    }
+
+    #[test]
+    fn even_size_rounds_odd_dimensions_down() {
+        assert_eq!(output_capture_size_from_frame(643, 483, true), (640, 480));
+        assert_eq!(output_capture_size_from_frame(643, 483, false), (641, 481));
+    }
+
+    #[test]
+    fn frame_size_adds_border_and_respects_minimum() {
+        assert_eq!(frame_size_from_capture(640, 480), (642, 482));
+        assert_eq!(frame_size_from_capture(10, 10), (MIN_SEL_W, MIN_SEL_H));
+    }
 }

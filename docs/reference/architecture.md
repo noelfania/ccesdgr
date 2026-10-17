@@ -96,6 +96,9 @@ flowchart LR
 
 ## 3. 기동~종료 생명주기
 
+- **단일 인스턴스**: 뮤텍스 `Local\GMTLMouseClick.SingleInstance`. 이미 있으면 기존 메인 창에 `WM_COMMAND(ID_TRAY_SETTINGS)`를 보내고 종료.
+- **시작 프로그램 경로**: `start_with_windows`가 켜져 있으면 기동 시 Run 값을 현재 exe 경로로 재기록.
+
 ```mermaid
 flowchart TD
   start([프로세스 시작])
@@ -105,7 +108,7 @@ flowchart TD
   main_win["히든 메인 창 생성\nCLASS: GMTLMouseClickMainWindow"]
   eff_win["effect::create_window\nCLASS: GMTLMouseClickEffectWindow"]
   hook["WH_MOUSE_LL 등록\nmouse_proc"]
-  hotkeys["register_hotkeys\nCtrl+Alt+Shift+C/A"]
+  hotkeys["register_hotkeys\nCtrl+Alt+Shift+R/C/A"]
   tray_add["tray::add"]
   loop_msg["GetMessage 루프"]
   destroy[WM_DESTROY]
@@ -190,6 +193,7 @@ flowchart TD
   m_record -->|미녹화| capture_flow[GIF: capture_ui::show]
   m_snip --> snip_flow["select_rect → 클립보드 비트맵"]
   m_draw --> draw_toggle["draw::show 토글"]
+  hotkey_r["핫키 Ctrl+Alt+Shift+R"] --> capture_flow
   hotkey_c["핫키 Ctrl+Alt+Shift+C"] --> snip_flow
   hotkey_a["핫키 Ctrl+Alt+Shift+A"] --> draw_toggle
   taskbar_msg["TaskbarCreated 등록 메시지"] --> tray_readd["tray::add 재호출"]
@@ -199,8 +203,13 @@ flowchart TD
 - **GIF 항목 레이블**: `recorder::is_recording()`에 따라 `Stop GIF Recording` / `Record GIF...` 전환.
 - **녹화 중 트레이 선택**: `capture_ui`를 다시 열지 않고 `recorder::stop()`만 호출.
 - **글로벌 핫키** ([`main.rs`](../../src/main.rs) `RegisterHotKey`, `MOD_NOREPEAT`):
+  - `Ctrl+Alt+Shift+R` → GIF: 프레임 열기 → (열려 있으면) 녹화 시작 → (녹화 중이면) 중지
   - `Ctrl+Alt+Shift+C` → 스냅샷 (`snip::run`)
   - `Ctrl+Alt+Shift+A` → 화면 주석 토글 (`draw::show`)
+  - 등록 실패 시 실패한 조합만 나열해 경고 후 계속.
+- **녹화 중지 경로 통일**: 트레이/핫키 중지는 `capture_ui::request_stop()` → ■ 버튼과 같은 `poll_done` 저장 흐름.
+- **트레이 메뉴**: 단축키 표시, Settings 굵게(기본 항목), `Click Effects` 체크 토글(즉시 `config.json` 저장).
+- **알림**: `tray::notify` / `notify_error` (`NIF_INFO` 풍선) — 스냅샷 복사, GIF 저장, 주석 복사, 오류. 녹화 중 툴팁 `… — Recording`.
 
 ---
 
@@ -212,7 +221,7 @@ flowchart TD
 2. **`GMTLCaptureUI`** 팝업: 선택 사각형(`RECT sel`), 상·하단 툴바, 녹화/취소, 프리셋·비율 콤보 등. 이전 `capture_frame`이 있으면 복원(불가 시 주 모니터 중앙 640×480).
 3. 녹화 시작 시 파일명 `gif-YYYYMMDD-HHMMSS.gif`. `ask_gif_save_path`가 OFF면 폴더는 `gif_output_path`에 바로 저장; ON이면 `%TEMP%`에 기록 후 종료 시 Save As (`win::save_gif_dialog`).
 4. 캡처 영역은 프레임 내부에서 `BORDER` 안쪽 픽셀; `gif_even_size` 켜면 출력 가로·세로를 짝수로 보정.
-5. **`recorder::start`**: 백그라운드 스레드에서 약 **100ms 간격(10 FPS)** 으로 프레임 캡처, `gif` 크레이트로 인코딩, 종료 시 flush.
+5. **`recorder::start`**: 백그라운드 스레드에서 약 **100ms 간격(10 FPS)** 으로 프레임 캡처(`Capturer`: DC·비트맵·폰트를 녹화 동안 재사용), 인코딩은 별도 스레드(`sync_channel` 8프레임). 큐가 차면 캡처가 기다리고, 프레임 지연은 실제 경과 시간으로 계산. 종료 시 flush. 실패는 `take_last_error()`로 UI에 전달, 앱 종료 시 `stop_and_wait`.
 6. 중지 후 `TIMER_POLL`(200ms)로 녹화 스레드 종료 폴링 → UI 복구; **취소** 또는 **프레임 0**이면 출력 파일 삭제.
 7. `ask_gif_save_path` ON이면 `GetSaveFileNameW` — OK 시 temp→선택 경로, Cancel 시 temp 삭제(저장 안 함).
 8. `open_folder_after_save`이면 최종 저장 폴더를 `ShellExecuteW`로 연다(Save As 취소 시 생략).
@@ -242,6 +251,8 @@ flowchart TD
 - 가상 스크린 전체 크기 레이어 창; 배경은 `CAPTUREBLT` 등으로 초기 화면 캡처 후 비트맵 위에 합성.
 - **`draw::show`**: 이미 열려 있으면 해당 창 파괴(토글 닫기).
 - **종료**: `Esc` 또는 다시 메뉴/핫키로 호출 시 닫힘.
+- **도움말**: 진입 시 주 모니터 상단에 힌트 3.5초, `F1`로 단축키 표 토글 (GDI로 DIB에 그린 뒤 alpha 복구).
+- **복사**: `Ctrl+C` → committed 버퍼를 `CF_BITMAP`으로 클립보드에 (`snip::set_clipboard_bitmap` 공용).
 - **클릭 효과 상호 배제**: `draw::is_active()`이면 `handle_mouse_click`에서 즉시 반환.
 - **렌더 성능**: 확정 스트로크는 `committed` 버퍼에 bake; 매 프레임은 draft만 합성([incident-draw-render-performance.md](incident-draw-render-performance.md)).
 
@@ -302,6 +313,11 @@ flowchart TD
 ### 9.3 설정 창 동작 ([`settings.rs`](../../src/settings.rs))
 
 - **탭**: General, Mouse, Info.
+- **DPI**: 좌표는 96 DPI 기준으로 작성, `child()`에서 `win::scale`로 변환. Segoe UI 9pt를 DPI별 생성, `WM_DPICHANGED` 시 제안 rect 적용 후 컨트롤 재생성.
+- **키보드**: 메인 메시지 루프가 설정 창에 `IsDialogMessageW` → Tab 이동, Enter = OK, Esc = Cancel.
+- **General**: GIF 폴더 `Browse...`(`win::browse_folder_dialog`); 저장 시 폴더가 없으면 생성 여부 확인.
+- **의존 컨트롤**: 타임스탬프 OFF → 글자 크기 비활성, 클릭 효과 OFF → 효과 관련 컨트롤 비활성.
+- **Info**: 버전, 전체 단축키, 주석 모드 조작, 설정 파일 경로 + `Open Folder`.
 - **버튼**:
   - **OK**: 현재 페이지 동기화 → `apply_settings` 성공 시 창 닫기.
   - **Apply**: 동기화·저장만, 창 유지.

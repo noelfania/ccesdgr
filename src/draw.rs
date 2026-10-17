@@ -1,14 +1,16 @@
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
 use std::sync::Mutex;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC,
-    ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
+    BitBlt, CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, GetDC, ReleaseDC, SelectObject,
+    SetBkMode, SetDIBits, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, BLENDFUNCTION, CAPTUREBLT, DIB_RGB_COLORS, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, HDC,
+    SRCCOPY,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -16,7 +18,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyCursor, DestroyWindow,
-    GetCursorPos, GetSystemMetrics, LoadCursorW, RegisterClassExW, SetCursor, ShowWindow,
+    GetCursorPos, GetSystemMetrics, KillTimer, LoadCursorW, RegisterClassExW, SetCursor, SetTimer,
+    ShowWindow, WM_TIMER,
     UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, HCURSOR, HTCLIENT, ICONINFO, IDC_ARROW,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
     ULW_ALPHA, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
@@ -42,6 +45,33 @@ const MAX_UNDO: usize = 32;
 const VK_CONTROL_KEY: i32 = 0x11;
 const VK_SHIFT_KEY: i32 = 0x10;
 const VK_TAB_KEY: i32 = 0x09;
+const VK_F1_KEY: u32 = 0x70;
+const TIMER_HINT: usize = 1;
+const HINT_DURATION_MS: u32 = 3500;
+
+// 도움말 표시 상태: 진입 힌트 → 자동 숨김, F1로 전체 단축키 토글
+const HELP_NONE: u8 = 0;
+const HELP_HINT: u8 = 1;
+const HELP_FULL: u8 = 2;
+static HELP_MODE: AtomicU8 = AtomicU8::new(HELP_NONE);
+
+const HINT_TEXT: &str = "Annotate mode  ·  F1: shortcuts  ·  Ctrl+C: copy  ·  Esc: exit";
+const HELP_TITLE: &str = "Annotation shortcuts";
+const HELP_ROWS: &[(&str, &str)] = &[
+    ("Drag", "Free pen"),
+    ("Ctrl + drag", "Line"),
+    ("Shift + drag", "Rectangle"),
+    ("Tab + drag", "Ellipse"),
+    ("Ctrl+Shift + drag", "Arrow"),
+    ("X + drag", "Blur area"),
+    ("Right-drag", "Eraser"),
+    ("Ctrl + Wheel", "Pen width"),
+    ("R G B Y O P W K", "Color (Shift = highlighter)"),
+    ("Ctrl+Z", "Undo"),
+    ("Ctrl+C", "Copy annotated screen"),
+    ("F1", "Show / hide this help"),
+    ("Esc", "Exit"),
+];
 
 // build.rs: assets/draw-pen.png → RGBA bin(동적 틴트)
 static DRAW_PEN_RGBA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/draw_pen_rgba.bin"));
@@ -246,7 +276,9 @@ pub fn show() {
     }
 
     DRAW_HWND.store(hwnd as isize, Ordering::Relaxed);
+    HELP_MODE.store(HELP_HINT, Ordering::Relaxed);
     unsafe {
+        SetTimer(hwnd, TIMER_HINT, HINT_DURATION_MS, None);
         render(hwnd);
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(hwnd);
@@ -360,6 +392,21 @@ unsafe extern "system" fn draw_proc(
                 DestroyWindow(hwnd);
                 return 0;
             }
+            if wparam as u32 == VK_F1_KEY {
+                let next = if HELP_MODE.load(Ordering::Relaxed) == HELP_FULL {
+                    HELP_NONE
+                } else {
+                    HELP_FULL
+                };
+                HELP_MODE.store(next, Ordering::Relaxed);
+                KillTimer(hwnd, TIMER_HINT);
+                render(hwnd);
+                return 0;
+            }
+            if is_key_down(VK_CONTROL_KEY) && wparam as u32 == b'C' as u32 {
+                copy_to_clipboard(hwnd);
+                return 0;
+            }
             apply_tool_cursor();
             if handle_key(hwnd, wparam as u32) {
                 return 0;
@@ -403,8 +450,18 @@ unsafe extern "system" fn draw_proc(
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
+        WM_TIMER if wparam == TIMER_HINT => {
+            KillTimer(hwnd, TIMER_HINT);
+            if HELP_MODE.load(Ordering::Relaxed) == HELP_HINT {
+                HELP_MODE.store(HELP_NONE, Ordering::Relaxed);
+                render(hwnd);
+            }
+            0
+        }
         WM_DESTROY => {
             ReleaseCapture();
+            KillTimer(hwnd, TIMER_HINT);
+            HELP_MODE.store(HELP_NONE, Ordering::Relaxed);
             DRAW_HWND.store(0, Ordering::Relaxed);
             clear_cursor_cache();
             let mut state = STATE.lock().expect("draw mutex poisoned");
@@ -1128,6 +1185,12 @@ unsafe fn update_layered_window(
 
     std::ptr::copy_nonoverlapping(buffer.as_ptr(), bits as *mut u8, buffer.len());
     let old_bitmap = SelectObject(mem_dc, bitmap);
+    let help_mode = HELP_MODE.load(Ordering::Relaxed);
+    if help_mode != HELP_NONE {
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u8, buffer.len());
+        let full = help_mode == HELP_FULL;
+        draw_help_panel(hwnd, mem_dc, pixels, left, top, width, height, full);
+    }
     let dst_point = POINT { x: left, y: top };
     let size = SIZE {
         cx: width,
@@ -1149,6 +1212,169 @@ unsafe fn update_layered_window(
     DeleteObject(bitmap);
     DeleteDC(mem_dc);
     ReleaseDC(null_mut(), screen_dc);
+}
+
+/// 주 모니터 상단 중앙에 어두운 패널 + 흰 글씨 (진입 힌트 / F1 단축키 표)
+unsafe fn draw_help_panel(
+    hwnd: HWND,
+    hdc: HDC,
+    pixels: &mut [u8],
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    full: bool,
+) {
+    let dpi = win::dpi_for_window(hwnd);
+    let font = win::create_ui_font(dpi * 4 / 3); // 9pt × 4/3 ≈ 12pt
+    let old_font = SelectObject(hdc, font);
+
+    let measure = |text: &str| -> (i32, i32) {
+        let wide = win::to_wide(text);
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        DrawTextW(
+            hdc,
+            wide.as_ptr(),
+            (wide.len() - 1) as i32,
+            &mut rect,
+            DT_LEFT | DT_NOPREFIX | DT_CALCRECT,
+        );
+        (rect.right, rect.bottom)
+    };
+
+    let pad = win::scale(14, dpi);
+    let gap = win::scale(24, dpi);
+    let (line_w, line_h) = measure(HINT_TEXT);
+    let (content_w, content_h, key_col_w) = if full {
+        let key_col_w = HELP_ROWS.iter().map(|(key, _)| measure(key).0).max().unwrap_or(0);
+        let desc_col_w = HELP_ROWS.iter().map(|(_, desc)| measure(desc).0).max().unwrap_or(0);
+        let title_w = measure(HELP_TITLE).0;
+        (
+            (key_col_w + gap + desc_col_w).max(title_w),
+            line_h * (HELP_ROWS.len() as i32 + 2),
+            key_col_w,
+        )
+    } else {
+        (line_w, line_h, 0)
+    };
+
+    let primary = win::primary_screen_rect();
+    let panel_w = content_w + pad * 2;
+    let panel_h = content_h + pad * 2;
+    // 버퍼 좌표 = 화면 좌표 - 가상 화면 원점
+    let panel_left = ((primary.left + primary.right) / 2 - panel_w / 2 - left).max(0);
+    let panel_top = (primary.top + win::scale(24, dpi) - top).max(0);
+    let panel = RECT {
+        left: panel_left,
+        top: panel_top,
+        right: (panel_left + panel_w).min(width),
+        bottom: (panel_top + panel_h).min(height),
+    };
+
+    let brush = CreateSolidBrush(win::colorref(32, 32, 32));
+    FillRect(hdc, &panel, brush);
+    DeleteObject(brush);
+    SetBkMode(hdc, 1);
+
+    let draw_line = |text: &str, x: i32, y: i32, color: (u8, u8, u8)| {
+        SetTextColor(hdc, win::colorref(color.0, color.1, color.2));
+        let wide = win::to_wide(text);
+        let mut rect = RECT {
+            left: x,
+            top: y,
+            right: panel.right,
+            bottom: y + line_h,
+        };
+        DrawTextW(
+            hdc,
+            wide.as_ptr(),
+            (wide.len() - 1) as i32,
+            &mut rect,
+            DT_LEFT | DT_NOPREFIX,
+        );
+    };
+
+    let x = panel.left + pad;
+    let y = panel.top + pad;
+    if full {
+        draw_line(HELP_TITLE, x, y, (255, 255, 255));
+        for (index, (key, desc)) in HELP_ROWS.iter().enumerate() {
+            let row_y = y + line_h * (index as i32 + 2);
+            draw_line(key, x, row_y, (255, 214, 102));
+            draw_line(desc, x + key_col_w + gap, row_y, (235, 235, 235));
+        }
+    } else {
+        draw_line(HINT_TEXT, x, y, (255, 255, 255));
+    }
+
+    SelectObject(hdc, old_font);
+    DeleteObject(font);
+
+    // GDI는 32bpp DIB의 alpha를 0으로 남기므로 패널 영역을 불투명으로 복구
+    for py in panel.top..panel.bottom {
+        for px in panel.left..panel.right {
+            pixels[pixel_index(width, px, py) + 3] = 255;
+        }
+    }
+}
+
+/// 현재 주석 결과(확정 버퍼)를 클립보드에 비트맵으로 복사
+unsafe fn copy_to_clipboard(hwnd: HWND) {
+    let (width, height, pixels) = {
+        let state = STATE.lock().expect("draw mutex poisoned");
+        (state.width, state.height, state.committed.clone())
+    };
+    if width <= 0 || height <= 0 || pixels.is_empty() {
+        return;
+    }
+
+    let screen_dc = GetDC(null_mut());
+    if screen_dc.is_null() {
+        return;
+    }
+    let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+    if bitmap.is_null() {
+        ReleaseDC(null_mut(), screen_dc);
+        return;
+    }
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..zeroed()
+        },
+        ..zeroed()
+    };
+    let rows = SetDIBits(
+        screen_dc,
+        bitmap,
+        0,
+        height as u32,
+        pixels.as_ptr() as *const c_void,
+        &bmi,
+        DIB_RGB_COLORS,
+    );
+    ReleaseDC(null_mut(), screen_dc);
+    if rows == 0 {
+        DeleteObject(bitmap);
+        crate::tray::notify_error("Failed to copy the annotation to the clipboard.");
+        return;
+    }
+
+    if crate::snip::set_clipboard_bitmap(hwnd, bitmap).is_ok() {
+        crate::tray::notify("Annotated screen copied to clipboard");
+    } else {
+        crate::tray::notify_error("Failed to copy the annotation to the clipboard.");
+    }
 }
 
 unsafe fn create_dib(

@@ -14,6 +14,8 @@ Facts only — no procedures. Schema SSOT for fields; behavior overview in [arch
 |------|--------|
 | Path | `%APPDATA%\GMTL Mouse Click\config.json` |
 | Env fallback | If `APPDATA` unset → `LOCALAPPDATA`; if both unset → process cwd. Then join `GMTL Mouse Click\config.json` (single path, not multi-file search) |
+| Corrupt file | Parse failure → copied to `config.json.bak`, app starts with defaults |
+| Atomic save | Written to `config.json.tmp`, then renamed over `config.json` |
 | Schema | `AppConfig` in [`src/config.rs`](../../src/config.rs) |
 
 ### AppConfig fields (summary)

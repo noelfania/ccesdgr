@@ -1,12 +1,12 @@
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, FrameRect, GetStockObject, InvalidateRect,
-    UpdateWindow, COLOR_3DFACE, DEFAULT_GUI_FONT, HDC,
+    CreateSolidBrush, DeleteObject, FillRect, FrameRect, InvalidateRect, UpdateWindow,
+    COLOR_3DFACE, HDC,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -15,15 +15,18 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 use windows_sys::Win32::UI::Controls::{
     CheckDlgButton, IsDlgButtonChecked, BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT,
 };
+use windows_sys::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetDlgItem, GetWindowTextLengthW,
-    GetWindowTextW, LoadCursorW, LoadIconW, MessageBoxW, RegisterClassExW, SendMessageW,
-    SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_OWNERDRAW,
-    BS_PUSHBUTTON, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU, IDC_ARROW, MB_ICONERROR, MB_OK, SW_SHOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DRAWITEM, WM_HSCROLL,
-    WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE,
+    GetWindowTextW, LoadCursorW, MessageBoxW, RegisterClassExW,
+    SendMessageW, SetWindowPos, SetWindowTextW, ShowWindow, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON,
+    BS_GROUPBOX, BS_OWNERDRAW, BS_PUSHBUTTON, CW_USEDEFAULT, ES_AUTOHSCROLL, HMENU, IDCANCEL,
+    IDC_ARROW, IDOK, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, SW_SHOWDEFAULT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND,
+    WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_HSCROLL, WM_SETFONT, WNDCLASSEXW,
+    WS_BORDER, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 
 use crate::config::{
@@ -55,6 +58,8 @@ const ID_PREVIEW_RIGHT: i32 = 2019;
 const ID_RIPPLE_SPEED_VALUE: i32 = 2026;
 const ID_GIF_EVEN_SIZE: i32 = 2027;
 const ID_CLICK_EFFECT_ENABLED: i32 = 2028;
+const ID_GIF_BROWSE: i32 = 2030;
+const ID_OPEN_CONFIG_DIR: i32 = 2031;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
 const ID_SWATCH_RIGHT_0: i32 = 2023;
@@ -76,12 +81,27 @@ const PAGE_GENERAL: i32 = 1;
 const PAGE_MOUSE: i32 = 2;
 const PAGE_INFO: i32 = 3;
 
+// 96 DPI 기준 클라이언트 크기 / 하단 버튼 바 위치
+const CLIENT_W: i32 = 600;
+const CLIENT_H: i32 = 470;
+const BUTTON_BAR_Y: i32 = 426;
+const WINDOW_STYLE_FLAGS: WINDOW_STYLE = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+
 static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
 static PENDING_CONFIG: Mutex<Option<AppConfig>> = Mutex::new(None);
 static CURRENT_CONFIG: Mutex<Option<AppConfig>> = Mutex::new(None);
 static CUSTOM_COLORS: Mutex<[COLORREF; 16]> = Mutex::new([0; 16]);
 static CURRENT_PAGE: Mutex<i32> = Mutex::new(PAGE_GENERAL);
 static CONTENT_CONTROLS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+// 탭/하단 버튼 (DPI 변경 시 재생성)
+static FRAME_CONTROLS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+static DPI: AtomicU32 = AtomicU32::new(96);
+static UI_FONT: AtomicIsize = AtomicIsize::new(0);
+
+/// 열려 있는 설정 창 (메시지 루프의 IsDialogMessageW용)
+pub fn window() -> HWND {
+    SETTINGS_HWND.load(Ordering::Relaxed) as HWND
+}
 
 pub fn show(owner: HWND, config: &AppConfig) {
     if let Some(hwnd) = active_window() {
@@ -101,8 +121,8 @@ pub fn show(owner: HWND, config: &AppConfig) {
         lpfnWndProc: Some(settings_proc),
         hInstance: instance,
         hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
-        hIcon: unsafe { LoadIconW(instance, win::resource_id(win::APP_ICON_ID)) },
-        hIconSm: unsafe { LoadIconW(instance, win::resource_id(win::APP_ICON_ID)) },
+        hIcon: win::app_icon(false),
+        hIconSm: win::app_icon(true),
         hbrBackground: (COLOR_3DFACE + 1) as isize as _,
         lpszClassName: class_name.as_ptr(),
         ..unsafe { std::mem::zeroed() }
@@ -118,11 +138,11 @@ pub fn show(owner: HWND, config: &AppConfig) {
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            WINDOW_STYLE_FLAGS,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            620,
-            485,
+            CLIENT_W,
+            CLIENT_H,
             owner,
             null_mut(),
             instance,
@@ -148,7 +168,29 @@ unsafe extern "system" fn settings_proc(
 ) -> LRESULT {
     match message {
         WM_CREATE => {
+            set_dpi(hwnd, win::dpi_for_window(hwnd));
+            resize_to_client(hwnd);
             create_controls(hwnd);
+            0
+        }
+        WM_DPICHANGED => {
+            // 다른 배율의 모니터로 이동: 제안 rect 적용 후 컨트롤·폰트 재생성
+            sync_current_page(hwnd);
+            set_dpi(hwnd, win::low_word(wparam) as u32);
+            let suggested = &*(lparam as *const windows_sys::Win32::Foundation::RECT);
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                suggested.left,
+                suggested.top,
+                suggested.right - suggested.left,
+                suggested.bottom - suggested.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            destroy_frame_controls();
+            create_frame_controls(hwnd);
+            let page = *CURRENT_PAGE.lock().expect("settings page mutex poisoned");
+            render_page(hwnd, page);
             0
         }
         WM_DRAWITEM => {
@@ -208,12 +250,25 @@ unsafe extern "system" fn settings_proc(
                     reset_settings(hwnd);
                     0
                 }
-                ID_CONFIRM => {
+                // IDOK/IDCANCEL: IsDialogMessageW가 Enter/Esc에 보낸다
+                ID_CONFIRM | IDOK => {
                     save_settings(hwnd);
                     0
                 }
-                ID_CANCEL => {
+                ID_CANCEL | IDCANCEL => {
                     DestroyWindow(hwnd);
+                    0
+                }
+                ID_GIF_TIMESTAMP | ID_CLICK_EFFECT_ENABLED => {
+                    update_dependent_controls(hwnd);
+                    0
+                }
+                ID_GIF_BROWSE => {
+                    browse_gif_folder(hwnd);
+                    0
+                }
+                ID_OPEN_CONFIG_DIR => {
+                    open_config_folder();
                     0
                 }
                 ID_APPLY => {
@@ -246,6 +301,14 @@ unsafe extern "system" fn settings_proc(
                 .lock()
                 .expect("settings controls mutex poisoned")
                 .clear();
+            FRAME_CONTROLS
+                .lock()
+                .expect("settings controls mutex poisoned")
+                .clear();
+            let font = UI_FONT.swap(0, Ordering::Relaxed);
+            if font != 0 {
+                DeleteObject(font as _);
+            }
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -268,16 +331,74 @@ unsafe fn create_controls(hwnd: HWND) {
     *CURRENT_CONFIG.lock().expect("settings mutex poisoned") = Some(config.clone());
     *CURRENT_PAGE.lock().expect("settings page mutex poisoned") = PAGE_GENERAL;
 
-    button(hwnd, ID_NAV_GENERAL, "General", 16, 14, 72, 28, false);
-    button(hwnd, ID_NAV_MOUSE, "Mouse", 88, 14, 82, 28, false);
-    button(hwnd, ID_NAV_INFO, "Info", 170, 14, 72, 28, false);
-
-    button(hwnd, ID_RESET, "Reset", 16, 374, 86, 28, false);
-    button(hwnd, ID_CONFIRM, "OK", 320, 374, 78, 28, true);
-    button(hwnd, ID_CANCEL, "Cancel", 406, 374, 78, 28, false);
-    button(hwnd, ID_APPLY, "Apply", 492, 374, 78, 28, false);
-
+    create_frame_controls(hwnd);
     show_page(hwnd, PAGE_GENERAL);
+}
+
+/// 탭 버튼 + 하단 버튼 바 (group box 아래, 겹치지 않음)
+unsafe fn create_frame_controls(hwnd: HWND) {
+    let y = BUTTON_BAR_Y;
+    for control in [
+        button(hwnd, ID_NAV_GENERAL, "General", 16, 14, 80, 28, false),
+        button(hwnd, ID_NAV_MOUSE, "Mouse", 96, 14, 80, 28, false),
+        button(hwnd, ID_NAV_INFO, "Info", 176, 14, 80, 28, false),
+        button(hwnd, ID_RESET, "Reset", 16, y, 86, 28, false),
+        button(hwnd, ID_CONFIRM, "OK", 334, y, 78, 28, true),
+        button(hwnd, ID_CANCEL, "Cancel", 420, y, 78, 28, false),
+        button(hwnd, ID_APPLY, "Apply", 506, y, 78, 28, false),
+    ] {
+        if !control.is_null() {
+            FRAME_CONTROLS
+                .lock()
+                .expect("settings controls mutex poisoned")
+                .push(control as isize);
+        }
+    }
+}
+
+unsafe fn destroy_frame_controls() {
+    let mut controls = FRAME_CONTROLS
+        .lock()
+        .expect("settings controls mutex poisoned");
+    for control in controls.drain(..) {
+        DestroyWindow(control as HWND);
+    }
+}
+
+/// DPI 저장 + 해당 DPI용 UI 폰트 교체
+unsafe fn set_dpi(_hwnd: HWND, dpi: u32) {
+    let dpi = if dpi == 0 { 96 } else { dpi };
+    DPI.store(dpi, Ordering::Relaxed);
+    let font = win::create_ui_font(dpi);
+    let old = UI_FONT.swap(font as isize, Ordering::Relaxed);
+    if old != 0 {
+        DeleteObject(old as _);
+    }
+}
+
+fn s(value: i32) -> i32 {
+    win::scale(value, DPI.load(Ordering::Relaxed))
+}
+
+/// 96 DPI 기준 CLIENT_W×CLIENT_H 클라이언트 영역이 되도록 창 크기 조정
+unsafe fn resize_to_client(hwnd: HWND) {
+    let dpi = DPI.load(Ordering::Relaxed);
+    let mut rect = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: s(CLIENT_W),
+        bottom: s(CLIENT_H),
+    };
+    AdjustWindowRectExForDpi(&mut rect, WINDOW_STYLE_FLAGS, 0, 0, dpi);
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        0,
+        0,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 unsafe fn save_settings(hwnd: HWND) {
@@ -301,12 +422,104 @@ unsafe fn apply_settings_from_window(hwnd: HWND) -> bool {
         return false;
     };
 
+    if !ensure_gif_folder(hwnd, &config.gif_output_path) {
+        return false;
+    }
+
     if let Err(message) = crate::apply_settings(config) {
         error(hwnd, &message);
         return false;
     }
 
     true
+}
+
+/// GIF 저장 폴더가 없으면 생성 여부를 묻는다. 저장을 계속해도 되면 true.
+unsafe fn ensure_gif_folder(hwnd: HWND, path: &str) -> bool {
+    let folder = std::path::Path::new(path);
+    if folder.is_dir() {
+        return true;
+    }
+    let title = win::to_wide("GMTL Mouse Click Settings");
+    let message = win::to_wide(&format!(
+        "The GIF output folder does not exist:\n{path}\n\nCreate it?"
+    ));
+    if MessageBoxW(
+        hwnd,
+        message.as_ptr(),
+        title.as_ptr(),
+        MB_YESNO | MB_ICONQUESTION,
+    ) != IDYES
+    {
+        return false;
+    }
+    if let Err(err) = std::fs::create_dir_all(folder) {
+        error(hwnd, &format!("Failed to create the folder: {err}"));
+        return false;
+    }
+    true
+}
+
+unsafe fn browse_gif_folder(hwnd: HWND) {
+    if let Some(folder) = win::browse_folder_dialog(hwnd, "Choose the GIF output folder") {
+        set_control_text(hwnd, ID_GIF_PATH, &folder.to_string_lossy());
+    }
+}
+
+unsafe fn open_config_folder() {
+    let path = crate::config::config_path();
+    let folder = path.parent().unwrap_or(&path);
+    let _ = std::fs::create_dir_all(folder);
+    let folder = win::to_wide(&folder.to_string_lossy());
+    let operation = win::to_wide("explore");
+    ShellExecuteW(
+        null_mut(),
+        operation.as_ptr(),
+        folder.as_ptr(),
+        null(),
+        null(),
+        SW_SHOWDEFAULT,
+    );
+}
+
+/// 상위 옵션이 꺼져 있으면 하위 컨트롤을 비활성화한다.
+unsafe fn update_dependent_controls(hwnd: HWND) {
+    let set_enabled = |ids: &[i32], enabled: bool| {
+        for &id in ids {
+            let control = GetDlgItem(hwnd, id);
+            if !control.is_null() {
+                EnableWindow(control, enabled as i32);
+            }
+        }
+    };
+
+    if !GetDlgItem(hwnd, ID_GIF_TIMESTAMP).is_null() {
+        let timestamp_on = IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
+        set_enabled(&[ID_GIF_TIMESTAMP_SIZE], timestamp_on);
+    }
+
+    if !GetDlgItem(hwnd, ID_CLICK_EFFECT_ENABLED).is_null() {
+        let effects_on = IsDlgButtonChecked(hwnd, ID_CLICK_EFFECT_ENABLED) == BST_CHECKED;
+        set_enabled(
+            &[
+                ID_CLICK_EFFECT_KIND,
+                ID_LEFT_HEX,
+                ID_RIGHT_HEX,
+                ID_LEFT_COLOR,
+                ID_RIGHT_COLOR,
+                ID_SWATCH_LEFT_0,
+                ID_SWATCH_LEFT_0 + 1,
+                ID_SWATCH_LEFT_0 + 2,
+                ID_SWATCH_RIGHT_0,
+                ID_SWATCH_RIGHT_0 + 1,
+                ID_SWATCH_RIGHT_0 + 2,
+                ID_RIPPLE_RADIUS,
+                ID_RIPPLE_SPEED,
+                ID_RIPPLE_SPEED_VALUE,
+            ],
+            effects_on,
+        );
+    }
 }
 
 unsafe fn reset_settings(hwnd: HWND) {
@@ -333,6 +546,7 @@ unsafe fn render_page(hwnd: HWND, page: i32) {
         _ => create_general_page(hwnd),
     }
 
+    update_dependent_controls(hwnd);
     repaint_window(hwnd);
 }
 
@@ -440,94 +654,82 @@ unsafe fn create_general_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "General Settings", 16, 52, 554, 360);
+    content_group_box(hwnd, "General Settings", 16, 52, 568, 360);
 
-    content_label(hwnd, "Start with Windows", 42, 92, 180, 24);
-    content_label(
-        hwnd,
-        "When checked, the app starts automatically after the next Windows sign-in.",
-        42,
-        118,
-        420,
-        22,
-    );
-    let startup_cb = content_checkbox(hwnd, ID_STARTUP_CHECK, "", 512, 92, 40, 24);
-    CheckDlgButton(
+    // 체크박스에 문구를 직접 넣어 라벨 클릭으로도 토글되게 한다.
+    labeled_checkbox(
         hwnd,
         ID_STARTUP_CHECK,
-        if config.start_with_windows {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
+        "Start with Windows",
+        36,
+        80,
+        config.start_with_windows,
     );
-    remember_content(startup_cb);
+    content_label(
+        hwnd,
+        "Starts automatically after the next Windows sign-in.",
+        54,
+        104,
+        480,
+        20,
+    );
 
-    content_label(hwnd, "GIF output folder", 42, 162, 140, 24);
-    content_edit(hwnd, ID_GIF_PATH, &config.gif_output_path, 42, 188, 490, 24);
+    content_label(hwnd, "GIF output folder", 36, 140, 200, 20);
+    content_edit(hwnd, ID_GIF_PATH, &config.gif_output_path, 36, 163, 440, 24);
+    content_button(hwnd, ID_GIF_BROWSE, "Browse...", 484, 162, 84, 26, false);
 
-    content_label(hwnd, "Ask save location when recording ends", 42, 228, 320, 24);
-    let ask_cb = content_checkbox(hwnd, ID_GIF_ASK_SAVE, "", 512, 228, 40, 24);
-    CheckDlgButton(
+    labeled_checkbox(
         hwnd,
         ID_GIF_ASK_SAVE,
-        if config.ask_gif_save_path {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
+        "Ask where to save when recording ends",
+        36,
+        204,
+        config.ask_gif_save_path,
     );
-    remember_content(ask_cb);
-
-    content_label(hwnd, "Open folder after save", 42, 268, 200, 24);
-    let open_cb = content_checkbox(hwnd, ID_GIF_OPEN_FOLDER, "", 512, 268, 40, 24);
-    CheckDlgButton(
+    labeled_checkbox(
         hwnd,
         ID_GIF_OPEN_FOLDER,
-        if config.open_folder_after_save {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
+        "Open folder after saving",
+        36,
+        234,
+        config.open_folder_after_save,
     );
-    remember_content(open_cb);
-
-    content_label(hwnd, "Show elapsed time on GIF", 42, 308, 200, 24);
-    let timestamp_cb = content_checkbox(hwnd, ID_GIF_TIMESTAMP, "", 512, 308, 40, 24);
-    CheckDlgButton(
+    labeled_checkbox(
         hwnd,
         ID_GIF_TIMESTAMP,
-        if config.show_gif_timestamp {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
+        "Show elapsed time on GIF",
+        36,
+        264,
+        config.show_gif_timestamp,
     );
-    remember_content(timestamp_cb);
-
-    content_label(hwnd, "Elapsed time font size (8-24)", 42, 346, 220, 24);
+    content_label(
+        hwnd,
+        &format!(
+            "Font size ({}-{})",
+            MIN_GIF_TIMESTAMP_FONT_SIZE, MAX_GIF_TIMESTAMP_FONT_SIZE
+        ),
+        54,
+        296,
+        120,
+        20,
+    );
     content_edit(
         hwnd,
         ID_GIF_TIMESTAMP_SIZE,
         &config.gif_timestamp_font_size.to_string(),
-        512,
-        342,
-        40,
+        180,
+        292,
+        48,
         24,
     );
-
-    content_label(hwnd, "Force even GIF dimensions", 42, 380, 200, 24);
-    let even_cb = content_checkbox(hwnd, ID_GIF_EVEN_SIZE, "", 512, 380, 40, 24);
-    CheckDlgButton(
+    labeled_checkbox(
         hwnd,
         ID_GIF_EVEN_SIZE,
-        if config.gif_even_size {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
+        "Force even GIF dimensions (better video-converter compatibility)",
+        36,
+        328,
+        config.gif_even_size,
     );
-    remember_content(even_cb);
 }
 
 unsafe fn create_mouse_page(hwnd: HWND) {
@@ -537,10 +739,19 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         .clone()
         .unwrap_or_default();
 
-    content_group_box(hwnd, "Mouse Settings", 16, 52, 554, 300);
+    content_group_box(hwnd, "Mouse Settings", 16, 52, 568, 360);
 
-    content_label(hwnd, "Click effect", 42, 92, 120, 24);
-    let effect_combo = content_combo(hwnd, ID_CLICK_EFFECT_KIND, 240, 88, 180, 120);
+    labeled_checkbox(
+        hwnd,
+        ID_CLICK_EFFECT_ENABLED,
+        "Show click effects",
+        36,
+        80,
+        config.click_effect_enabled,
+    );
+
+    content_label(hwnd, "Effect style", 42, 120, 120, 24);
+    let effect_combo = content_combo(hwnd, ID_CLICK_EFFECT_KIND, 240, 116, 180, 200);
     combo_add(effect_combo, "Ripple");
     combo_add(effect_combo, "Filled Fade");
     combo_add(effect_combo, "Filled Cross Fade");
@@ -558,57 +769,45 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         ClickEffectKind::XCrossFade => 6,
     };
     SendMessageW(effect_combo, CB_SETCURSEL, effect_index, 0);
-    content_label(hwnd, "On", 442, 92, 48, 24);
-    let enabled_cb = content_checkbox(hwnd, ID_CLICK_EFFECT_ENABLED, "", 512, 88, 40, 24);
-    CheckDlgButton(
-        hwnd,
-        ID_CLICK_EFFECT_ENABLED,
-        if config.click_effect_enabled {
-            BST_CHECKED
-        } else {
-            BST_UNCHECKED
-        },
-    );
-    remember_content(enabled_cb);
 
     // ── 왼쪽 클릭 색상 (y=128) ──────────────────────────────────────
-    content_label(hwnd, "Left click effect color", 42, 128, 190, 24);
-    content_color_preview(hwnd, ID_PREVIEW_LEFT, 240, 124, 28, 24);
+    content_label(hwnd, "Left click effect color", 42, 164, 190, 24);
+    content_color_preview(hwnd, ID_PREVIEW_LEFT, 240, 160, 28, 24);
     content_edit(
         hwnd,
         ID_LEFT_HEX,
         &config.left_click_color.to_hex(),
         276,
-        124,
+        160,
         78,
         24,
     );
-    content_swatches(hwnd, ID_SWATCH_LEFT_0, 362, 127);
-    content_button(hwnd, ID_LEFT_COLOR, "Pick Color", 442, 124, 96, 26, false);
+    content_swatches(hwnd, ID_SWATCH_LEFT_0, 362, 163);
+    content_button(hwnd, ID_LEFT_COLOR, "Pick Color", 442, 160, 96, 26, false);
 
     // ── 오른쪽 클릭 색상 (y=172) ──────────────────────────────────
-    content_label(hwnd, "Right click effect color", 42, 172, 190, 24);
-    content_color_preview(hwnd, ID_PREVIEW_RIGHT, 240, 168, 28, 24);
+    content_label(hwnd, "Right click effect color", 42, 208, 190, 24);
+    content_color_preview(hwnd, ID_PREVIEW_RIGHT, 240, 204, 28, 24);
     content_edit(
         hwnd,
         ID_RIGHT_HEX,
         &config.right_click_color.to_hex(),
         276,
-        168,
+        204,
         78,
         24,
     );
-    content_swatches(hwnd, ID_SWATCH_RIGHT_0, 362, 171);
-    content_button(hwnd, ID_RIGHT_COLOR, "Pick Color", 442, 168, 96, 26, false);
+    content_swatches(hwnd, ID_SWATCH_RIGHT_0, 362, 207);
+    content_button(hwnd, ID_RIGHT_COLOR, "Pick Color", 442, 204, 96, 26, false);
 
     // ── 효과 반지름 (y=216) ─────────────────────────────────────
-    content_label(hwnd, "Effect radius", 42, 216, 180, 24);
+    content_label(hwnd, "Effect radius", 42, 252, 180, 24);
     content_edit(
         hwnd,
         ID_RIPPLE_RADIUS,
         &config.ripple_radius.to_string(),
         240,
-        212,
+        248,
         72,
         24,
     );
@@ -616,29 +815,26 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         hwnd,
         &format!("{} ~ {} px", MIN_RIPPLE_RADIUS, MAX_RIPPLE_RADIUS),
         322,
-        216,
+        252,
         130,
         24,
     );
 
     // ── 효과 속도 (y=252) ────────────────────────────────────────
-    content_label(hwnd, "Effect speed", 42, 256, 100, 24);
-    content_label(hwnd, "Slow", 146, 283, 30, 20);
+    content_label(hwnd, "Effect speed", 42, 292, 100, 24);
+    content_label(hwnd, "Slow", 146, 319, 30, 20);
     // 트랙바: 느림←→빠름 (슬라이더 값 ↑ = 빠름 = lifetime ↓)
-    let track_cls = win::to_wide("msctls_trackbar32");
-    let track = CreateWindowExW(
+    let track = child(
+        hwnd,
+        "msctls_trackbar32",
+        "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_AUTOTICKS,
         0,
-        track_cls.as_ptr(),
-        null(),
-        WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
         178,
-        274,
+        310,
         250,
         26,
-        hwnd,
-        ID_RIPPLE_SPEED as isize as HMENU,
-        null_mut(),
-        null_mut(),
+        ID_RIPPLE_SPEED,
     );
     if !track.is_null() {
         // range: 10(느림,좌)~60(빠름,우) → 반전: 슬라이더 위치 = MAX+MIN-lifetime
@@ -653,50 +849,67 @@ unsafe fn create_mouse_page(hwnd: HWND) {
         ID_RIPPLE_SPEED_VALUE,
         &speed_from_lifetime(config.ripple_lifetime).to_string(),
         462,
-        252,
+        288,
         50,
         24,
     );
-    content_label(hwnd, "Fast", 432, 283, 30, 20);
-    content_label(hwnd, "10 ~ 60", 516, 256, 48, 20);
+    content_label(hwnd, "Fast", 432, 319, 30, 20);
+    content_label(hwnd, "10 ~ 60", 516, 292, 48, 20);
 }
 
 unsafe fn create_info_page(hwnd: HWND) {
-    content_group_box(hwnd, "About", 16, 52, 554, 268);
-    content_label(hwnd, "GMTL Mouse Click", 42, 92, 220, 24);
+    content_group_box(hwnd, "About", 16, 52, 568, 360);
     content_label(
         hwnd,
-        "Shows circular ripple effects at mouse click locations.",
-        42,
-        126,
-        480,
-        24,
+        &format!("GMTL Mouse Click  v{}", env!("CARGO_PKG_VERSION")),
+        36,
+        78,
+        400,
+        20,
     );
     content_label(
         hwnd,
-        "Open settings or exit from the tray icon.",
-        42,
-        156,
-        460,
-        24,
+        "Click visualization, GIF recording, snapshots and screen annotation — all from the tray icon.",
+        36,
+        100,
+        540,
+        20,
     );
-    content_label(hwnd, "Shortcuts", 42, 196, 120, 24);
+
+    content_label(hwnd, "Global shortcuts", 36, 132, 300, 20);
+    for (index, line) in [
+        "Ctrl+Alt+Shift+R  —  Record GIF (start / stop)",
+        "Ctrl+Alt+Shift+C  —  Snapshot to clipboard",
+        "Ctrl+Alt+Shift+A  —  Annotate screen (toggle)",
+    ]
+    .iter()
+    .enumerate()
+    {
+        content_label(hwnd, line, 54, 154 + index as i32 * 20, 500, 20);
+    }
+
+    content_label(hwnd, "Annotation mode", 36, 222, 300, 20);
+    for (index, line) in [
+        "Drag: pen  ·  Ctrl: line  ·  Shift: rectangle  ·  Tab: ellipse  ·  Ctrl+Shift: arrow",
+        "X + drag: blur  ·  Right-drag: erase  ·  Ctrl+Wheel: pen width  ·  Ctrl+Z: undo",
+        "R G B Y O P W K: color (Shift = highlighter)  ·  Ctrl+C: copy  ·  F1: help  ·  Esc: exit",
+    ]
+    .iter()
+    .enumerate()
+    {
+        content_label(hwnd, line, 54, 244 + index as i32 * 20, 520, 20);
+    }
+
+    content_label(hwnd, "Settings file", 36, 316, 300, 20);
     content_label(
         hwnd,
-        "Ctrl+Alt+Shift+C — Snapshot to clipboard",
-        42,
-        222,
-        420,
-        24,
+        &crate::config::config_path().to_string_lossy(),
+        54,
+        338,
+        520,
+        20,
     );
-    content_label(
-        hwnd,
-        "Ctrl+Alt+Shift+A — Screen annotation",
-        42,
-        248,
-        420,
-        24,
-    );
+    content_button(hwnd, ID_OPEN_CONFIG_DIR, "Open Folder", 54, 364, 110, 26, false);
 }
 
 // 스와치 색상 조회 (CURRENT_CONFIG의 recent 목록에서)
@@ -924,16 +1137,9 @@ unsafe fn content_group_box(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, 
     remember_content(control);
 }
 
-unsafe fn content_checkbox(
-    hwnd: HWND,
-    id: i32,
-    text: &str,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> HWND {
-    child(
+/// 문구 포함 체크박스 (라벨 클릭으로도 토글)
+unsafe fn labeled_checkbox(hwnd: HWND, id: i32, text: &str, x: i32, y: i32, checked: bool) {
+    let control = child(
         hwnd,
         "BUTTON",
         text,
@@ -941,10 +1147,12 @@ unsafe fn content_checkbox(
         0,
         x,
         y,
-        width,
-        height,
+        540,
+        24,
         id,
-    )
+    );
+    CheckDlgButton(hwnd, id, if checked { BST_CHECKED } else { BST_UNCHECKED });
+    remember_content(control);
 }
 
 unsafe fn content_edit(hwnd: HWND, id: i32, text: &str, x: i32, y: i32, width: i32, height: i32) {
@@ -1010,7 +1218,7 @@ unsafe fn button(
     width: i32,
     height: i32,
     is_default: bool,
-) {
+) -> HWND {
     child(
         hwnd,
         "BUTTON",
@@ -1029,7 +1237,7 @@ unsafe fn button(
         width,
         height,
         id,
-    );
+    )
 }
 
 unsafe fn content_button(
@@ -1076,6 +1284,7 @@ unsafe fn child(
     height: i32,
     id: i32,
 ) -> HWND {
+    // 좌표는 96 DPI 기준 → 현재 모니터 DPI로 변환
     let class_name = win::to_wide(class_name);
     let text = win::to_wide(text);
     let control = CreateWindowExW(
@@ -1083,18 +1292,18 @@ unsafe fn child(
         class_name.as_ptr(),
         text.as_ptr(),
         style,
-        x,
-        y,
-        width,
-        height,
+        s(x),
+        s(y),
+        s(width),
+        s(height),
         parent,
         id as isize as HMENU,
         null_mut(),
         null_mut(),
     );
 
-    if !control.is_null() {
-        let font = GetStockObject(DEFAULT_GUI_FONT);
+    let font = UI_FONT.load(Ordering::Relaxed);
+    if !control.is_null() && font != 0 {
         SendMessageW(control, WM_SETFONT, font as WPARAM, 1);
     }
 
@@ -1142,5 +1351,33 @@ fn active_window() -> Option<HWND> {
         None
     } else {
         Some(value as HWND)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_and_lifetime_are_inverse() {
+        for lifetime in MIN_RIPPLE_LIFETIME..=MAX_RIPPLE_LIFETIME {
+            assert_eq!(lifetime_from_speed(speed_from_lifetime(lifetime)), lifetime);
+        }
+        // 슬라이더 오른쪽(빠름) = 짧은 lifetime
+        assert_eq!(speed_from_lifetime(MIN_RIPPLE_LIFETIME), MAX_RIPPLE_LIFETIME);
+    }
+
+    #[test]
+    fn push_recent_dedupes_and_caps_at_three() {
+        let red = ClickColor::new(255, 0, 0);
+        let green = ClickColor::new(0, 255, 0);
+        let blue = ClickColor::new(0, 0, 255);
+        let white = ClickColor::new(255, 255, 255);
+        let mut recent = Vec::new();
+        for color in [red, green, blue, red, white] {
+            push_recent(&mut recent, color);
+        }
+        let hex: Vec<String> = recent.iter().map(|c| c.to_hex()).collect();
+        assert_eq!(hex, ["#FFFFFF", "#FF0000", "#0000FF"]);
     }
 }

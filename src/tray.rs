@@ -3,15 +3,14 @@ use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, FindWindowW, GetSystemMetrics, GetWindowRect,
-    LoadIconW, PostMessageW, RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu,
-    IDI_APPLICATION, MF_SEPARATOR, MF_STRING, SM_CXSCREEN, SM_CYSCREEN, TPM_BOTTOMALIGN,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, FindWindowW, GetSystemMetrics, GetWindowRect, PostMessageW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem,
+    TrackPopupMenu, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SM_CXSCREEN, SM_CYSCREEN, TPM_BOTTOMALIGN,
     TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
     WM_NULL, WM_RBUTTONUP,
 };
@@ -24,8 +23,10 @@ pub const ID_TRAY_EXIT: usize = 1002;
 pub const ID_TRAY_RECORD: usize = 1003;
 pub const ID_TRAY_SNIP: usize = 1004;
 pub const ID_TRAY_DRAW: usize = 1005;
+pub const ID_TRAY_TOGGLE_EFFECT: usize = 1006;
 
 const TRAY_UID: u32 = 1;
+const APP_TITLE: &str = "GMTL Mouse Click";
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 
 pub enum TrayAction {
@@ -46,25 +47,74 @@ pub fn add(hwnd: HWND) {
     data.uCallbackMessage = WM_TRAYICON;
     data.hIcon = load_tray_icon();
 
-    let tip = win::to_wide("GMTL Mouse Click");
-    for (index, value) in tip.iter().take(data.szTip.len()).enumerate() {
-        data.szTip[index] = *value;
-    }
+    let tip = if crate::recorder::is_recording() {
+        format!("{APP_TITLE} — Recording")
+    } else {
+        APP_TITLE.to_string()
+    };
+    copy_wide(&mut data.szTip, &tip);
 
     unsafe {
         Shell_NotifyIconW(NIM_ADD, &mut data);
     }
 }
 
-fn load_tray_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
-    // 파란 배경 아이콘 — 라이트/다크 작업표시줄 공용
-    let instance = unsafe { GetModuleHandleW(null()) };
-    let icon = unsafe { LoadIconW(instance, win::resource_id(win::APP_ICON_ID)) };
-    if icon.is_null() {
-        unsafe { LoadIconW(null_mut(), IDI_APPLICATION) }
-    } else {
-        icon
+/// 트레이 툴팁 갱신 (녹화 상태 표시용)
+pub fn set_recording_tip(recording: bool) {
+    let hwnd = crate::main_hwnd();
+    if hwnd.is_null() {
+        return;
     }
+    let mut data = notify_data(hwnd);
+    data.uFlags = NIF_TIP;
+    let tip = if recording {
+        format!("{APP_TITLE} — Recording")
+    } else {
+        APP_TITLE.to_string()
+    };
+    copy_wide(&mut data.szTip, &tip);
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &mut data);
+    }
+}
+
+/// 작업 결과를 트레이 풍선 알림(Windows 알림)으로 표시한다.
+pub fn notify(text: &str) {
+    show_balloon(text, NIIF_INFO);
+}
+
+pub fn notify_error(text: &str) {
+    show_balloon(text, NIIF_ERROR);
+}
+
+fn show_balloon(text: &str, flags: u32) {
+    let hwnd = crate::main_hwnd();
+    if hwnd.is_null() {
+        return;
+    }
+    let mut data = notify_data(hwnd);
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = flags;
+    copy_wide(&mut data.szInfoTitle, APP_TITLE);
+    copy_wide(&mut data.szInfo, text);
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &mut data);
+    }
+}
+
+/// 고정 길이 WCHAR 버퍼에 NUL 종료를 보장하며 복사
+fn copy_wide(dest: &mut [u16], text: &str) {
+    let wide = win::to_wide(text);
+    let len = wide.len().min(dest.len());
+    dest[..len].copy_from_slice(&wide[..len]);
+    if len == dest.len() && len > 0 {
+        dest[len - 1] = 0;
+    }
+}
+
+fn load_tray_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+    // 트레이 전용 소형 그림(16/20/24)이 DPI에 맞게 선택된다
+    win::app_icon(true)
 }
 
 pub fn remove(hwnd: HWND) {
@@ -90,21 +140,37 @@ pub fn show_menu(hwnd: HWND) {
 
     let settings = win::to_wide("Settings...");
     let record_label = if crate::recorder::is_recording() {
-        win::to_wide("Stop GIF Recording")
+        win::to_wide("Stop GIF Recording\tCtrl+Alt+Shift+R")
     } else {
-        win::to_wide("Record GIF...")
+        win::to_wide("Record GIF...\tCtrl+Alt+Shift+R")
     };
-    let snip = win::to_wide("Snapshot...");
-    let draw = win::to_wide("Annotate Screen");
+    let snip = win::to_wide("Snapshot...\tCtrl+Alt+Shift+C");
+    let draw = win::to_wide("Annotate Screen\tCtrl+Alt+Shift+A");
+    let effects = win::to_wide("Click Effects");
+    let effects_flag = if crate::click_effects_enabled() {
+        MF_CHECKED
+    } else {
+        MF_UNCHECKED
+    };
     let exit = win::to_wide("Exit");
 
     unsafe {
         AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settings.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, ID_TRAY_RECORD, record_label.as_ptr());
         AppendMenuW(menu, MF_STRING, ID_TRAY_SNIP, snip.as_ptr());
         AppendMenuW(menu, MF_STRING, ID_TRAY_DRAW, draw.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        AppendMenuW(
+            menu,
+            MF_STRING | effects_flag,
+            ID_TRAY_TOGGLE_EFFECT,
+            effects.as_ptr(),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exit.as_ptr());
+        // 좌클릭 동작(Settings)을 굵게 표시
+        SetMenuDefaultItem(menu, ID_TRAY_SETTINGS as u32, 0);
 
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
