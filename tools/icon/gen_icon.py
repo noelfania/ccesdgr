@@ -1,209 +1,115 @@
-"""앱/트레이 아이콘 생성기 (스케치 icon001-1.svg 기반).
+"""앱/트레이 아이콘 생성기 — assets/icon001-1.svg 스케치를 단색 선 아이콘으로.
 
-구성: 마우스 몸체(대각선 분할 2톤) + 버튼 이음선 + 커서 화살표 + 빨간 클릭 점(+리플).
-큰 크기(>=32)는 디테일 포함, 작은 크기(16~24)는 트레이용으로 단순화·굵게 그린다.
+스케치의 9개 선(사각형, 가로선, 긴 사선, 커서 화살표 5획, 원)을 좌표 그대로 직선화해 그린다.
+채움 없이 선만 사용하며 검정(밝은 작업표시줄·exe)과 흰색(어두운 작업표시줄) 두 벌을 만든다.
+16~48px는 1~2px 선을 픽셀 격자에 맞춰 트레이에서 선명하게 보이도록 한다.
 
 사용: python tools/icon/gen_icon.py
-출력: assets/app-icon.png (1024 마스터), assets/app-icon-{16,20,24}.png (소형 전용)
+출력: assets/app-icon.png, assets/app-icon-{16,20,24,32,40,48}.png (검정)
+      assets/app-icon-dark.png, assets/app-icon-dark-{16,...,48}.png (흰색)
 """
 
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "assets"
 
-# ── 색 ────────────────────────────────────────────────────────────────────
-BODY_TOP = (66, 133, 255)      # 몸체 그라데이션 위
-BODY_BOTTOM = (29, 78, 216)    # 몸체 그라데이션 아래
-FACET_LIGHT = (255, 255, 255, 34)  # 대각선 왼쪽 면 하이라이트
-SEAM = (16, 42, 120, 150)      # 버튼 이음선
-OUTLINE = (12, 28, 74, 255)    # 화살표 외곽선 / 몸체 테두리
-ARROW = (255, 255, 255, 255)
-DOT = (255, 71, 87, 255)       # 클릭/녹화 점
-DOT_RING = (255, 255, 255, 255)
+BLACK = (0, 0, 0, 230)        # 시스템 트레이 아이콘 톤 (약 90%)
+WHITE = (255, 255, 255, 255)
+# 픽셀 격자에 맞춰 따로 그리는 크기 → 선 두께(px). 트레이: 100%=16, 125%=20, 150%=24, 200%=32
+# (32는 구성이 촘촘해 2px면 위쪽 칸이 뭉쳐서 1px)
+SMALL_STROKES = {16: 1.0, 20: 1.0, 24: 1.0, 32: 1.0, 40: 2.0, 48: 2.0}
+SMALL_SIZES = tuple(SMALL_STROKES)
 
-# ── 기하 (0~1 정규화, 정사각 캔버스 기준) ───────────────────────────────
-BODY = (0.19, 0.045, 0.81, 0.955)   # left, top, right, bottom
-BODY_RADIUS = 0.29                  # 캔버스 대비 모서리 반경
-SEAM_Y = 0.255
-# 스케치의 대각선: 위쪽 중앙 → 아래 왼쪽
-DIAG_TOP = (0.475, BODY[1])
-DIAG_BOTTOM = (0.27, BODY[3])
-# 커서 화살표 (팁 기준, 높이 1 정규화)
-ARROW_SHAPE = [
-    (0.00, 0.00),
-    (0.00, 0.80),
-    (0.185, 0.635),
-    (0.305, 0.925),
-    (0.415, 0.88),
-    (0.295, 0.60),
-    (0.535, 0.60),
+# ── 스케치 좌표 (icon001-1.svg viewBox 단위, 손떨림만 직선화) ───────────
+RECT = (10.3, 10.2, 132.1, 212.4)          # 모서리 각진 사각형
+LINES = [
+    ((11.0, 53.5), (131.7, 57.1)),         # 가로선 (버튼 이음선)
+    ((65.5, 10.7), (18.7, 211.9)),         # 긴 사선 (위 → 아래 왼쪽)
+    ((56.3, 55.5), (54.5, 185.3)),         # 화살표 왼쪽 변
+    ((56.4, 55.3), (130.8, 157.2)),        # 화살표 오른쪽 변
+    ((54.6, 185.3), (88.1, 157.8)),        # 화살표 홈
+    ((88.3, 157.7), (108.5, 211.6)),       # 화살표 꼬리 (아래 변까지)
+    ((88.5, 157.7), (130.4, 157.4)),       # 화살표 날개
 ]
-DOT_CENTER = (0.645, 0.15)
+CIRCLE = ((119.9, 22.9), 6.8)              # 오른쪽 위 원
 
 
-def lerp(a, b, t):
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
-
-
-def body_mask(size, box, radius):
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
-    return mask
-
-
-def vertical_gradient(size, top, bottom, y0, y1):
-    grad = Image.new("RGBA", (size, size))
-    draw = ImageDraw.Draw(grad)
-    for y in range(size):
-        t = min(max((y - y0) / max(y1 - y0, 1), 0.0), 1.0)
-        draw.line([(0, y), (size, y)], fill=lerp(top, bottom, t) + (255,))
-    return grad
-
-
-def render(px, detail):
-    """px 크기 아이콘. detail=False면 트레이용 단순화 버전."""
-    ss = 16 if px <= 32 else 4          # 슈퍼샘플링 배율
+def render(px, color):
+    small = px in SMALL_SIZES
+    ss = 16                                # 슈퍼샘플링 배율
     n = px * ss
-    s = lambda v: v * n                 # 정규화 → 픽셀
 
-    # 작은 크기는 몸체를 꽉 채워 존재감을 키운다
-    body = BODY if detail else (0.15, 0.02, 0.85, 0.98)
-    box = [s(body[0]), s(body[1]), s(body[2]), s(body[3])]
-    radius = s(BODY_RADIUS if detail else 0.27)
+    # 선 두께(px): 작은 크기는 1~2px(시스템 트레이 아이콘과 동일), 큰 크기는 비례
+    if small:
+        stroke = SMALL_STROKES[px]
+    else:
+        stroke = max(2.0, px / 28)
+
+    # 스케치 외곽(사각형)을 캔버스 높이에 맞추고 가로는 비율 유지·가운데 정렬
+    x0, y0, x1, y1 = RECT
+    margin = stroke / 2 + (0 if small else px * 0.03)
+    scale = (px - 2 * margin) / (y1 - y0)
+    offset_x = (px - (x1 - x0) * scale) / 2 - x0 * scale
+    offset_y = margin - y0 * scale
+
+    def snap(v):
+        # 1px 선이 두 픽셀에 번지지 않도록 픽셀 중심(홀수 두께) / 경계(짝수)에 맞춤
+        if not small:
+            return v
+        half = (stroke % 2) / 2
+        return round(v - half) + half
+
+    def pt(p):
+        return (snap(p[0] * scale + offset_x) * ss, snap(p[1] * scale + offset_y) * ss)
 
     canvas = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    mask = body_mask(n, box, radius)
-
-    # 그림자 (큰 크기만)
-    if detail:
-        shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        shadow_mask = mask.filter(ImageFilter.GaussianBlur(s(0.018)))
-        shadow.putalpha(shadow_mask.point(lambda a: a * 70 // 255))
-        canvas.alpha_composite(shadow, (0, round(s(0.012))))
-
-    # 몸체 그라데이션
-    grad = vertical_gradient(n, BODY_TOP, BODY_BOTTOM, box[1], box[3])
-    body_layer = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    body_layer.paste(grad, (0, 0), mask)
-
-    # 대각선 분할 — 왼쪽 면을 밝게 (스케치의 사선)
-    facet = Image.new("L", (n, n), 0)
-    dt = (s(DIAG_TOP[0]) if detail else s(0.47), box[1])
-    db = (s(DIAG_BOTTOM[0]) if detail else s(0.24), box[3])
-    ImageDraw.Draw(facet).polygon([(0, 0), dt, db, (0, n)], fill=255)
-    facet = ImageChops.multiply(facet, mask)
-    light = Image.new("RGBA", (n, n), FACET_LIGHT)
-    body_layer.alpha_composite(Image.composite(light, Image.new("RGBA", (n, n)), facet))
-
-    # 상단 광택 (큰 크기만)
-    if detail:
-        gloss = Image.new("L", (n, n), 0)
-        ImageDraw.Draw(gloss).rounded_rectangle(
-            [box[0] + s(0.02), box[1] + s(0.012), box[2] - s(0.02), box[1] + s(0.20)],
-            radius=radius * 0.85,
-            fill=60,
-        )
-        gloss = ImageChops.multiply(gloss.filter(ImageFilter.GaussianBlur(s(0.02))), mask)
-        white = Image.new("RGBA", (n, n), (255, 255, 255, 255))
-        white.putalpha(gloss)
-        body_layer.alpha_composite(white)
-
-    canvas.alpha_composite(body_layer)
     draw = ImageDraw.Draw(canvas)
+    w = round(stroke * ss)
+    r = w / 2
 
-    # 버튼 이음선 + 대각선 경계(이음선 위 구간 = 좌우 버튼 분리)
-    if detail:
-        # 반투명 선은 별도 레이어에 그려 합성 (직접 그리면 몸체 alpha가 덮어써져 구멍이 남)
-        seam_layer = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(seam_layer)
-        seam_w = round(s(0.016))
-        sd.line([(box[0], s(SEAM_Y)), (box[2], s(SEAM_Y))], fill=SEAM, width=seam_w)
-        # 이음선 위의 사선 구간 = 좌우 버튼 경계
-        t = (s(SEAM_Y) - dt[1]) / (db[1] - dt[1])
-        mid = (dt[0] + (db[0] - dt[0]) * t, s(SEAM_Y))
-        sd.line([dt, mid], fill=SEAM, width=seam_w)
-        seam_layer.putalpha(ImageChops.multiply(seam_layer.getchannel("A"), mask))
-        canvas.alpha_composite(seam_layer)
-        draw = ImageDraw.Draw(canvas)
+    def line(a, b):
+        draw.line([a, b], fill=color, width=w)
+        # 둥근 끝 / 이음 (스케치의 stroke-linecap=round)
+        for x, y in (a, b):
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
 
-    # 커서 화살표
-    if detail:
-        tip = (s(0.415), s(SEAM_Y + 0.035))
-        h = s(0.64)
-        outline_w = s(0.026)
-    else:
-        tip = (s(0.30), s(0.14))
-        h = s(0.86)
-        outline_w = s(0.055)  # 작은 크기: 1px 남짓 외곽선
-    pts = [(tip[0] + x * h, tip[1] + y * h) for x, y in ARROW_SHAPE]
+    # 1. 사각형 (각진 모서리)
+    tl, br = pt((x0, y0)), pt((x1, y1))
+    draw.rectangle([tl[0] - r, tl[1] - r, br[0] + r, br[1] + r], outline=color, width=w)
 
-    if detail:
-        arrow_shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        ImageDraw.Draw(arrow_shadow).polygon(
-            [(x + s(0.012), y + s(0.018)) for x, y in pts], fill=(5, 15, 50, 110)
-        )
-        arrow_shadow = arrow_shadow.filter(ImageFilter.GaussianBlur(s(0.012)))
-        canvas.alpha_composite(arrow_shadow)
-        draw = ImageDraw.Draw(canvas)
+    # 2~8. 선들
+    for a, b in LINES:
+        line(pt(a), pt(b))
 
-    draw.polygon(pts, fill=ARROW)
-    draw.line(pts + [pts[0]], fill=OUTLINE, width=round(outline_w), joint="curve")
-    # 꼭짓점을 둥글게 (선 끝 뭉툭함 보정)
-    r = outline_w / 2
-    for x, y in pts:
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=OUTLINE)
-    # 외곽선이 안쪽 흰색을 잠식하지 않도록 내부 재도장
-    inner = shrink(pts, outline_w * 0.5)
-    draw.polygon(inner, fill=ARROW)
+    # 9. 원 — 작은 크기에선 최소 판독 크기로 키우고 사각형·가로선 안쪽에 들어가게 보정
+    (cx, cy), cr = CIRCLE
+    c = pt((cx, cy))
+    radius = cr * scale * ss
+    # 선이 두꺼워 속이 메워지지 않게, 링으로 보일 최소 반경 확보
+    radius = max(radius, w * 1.6) if not small else radius
+    if small:
+        radius = max(radius, stroke * ss)
+    # 사각형 테두리와 붙지 않게 안쪽으로 (간격 = 선 두께 절반 이상)
+    gap = max(0.5 * ss, r)
+    right_limit = br[0] - r - radius - r - gap
+    top_limit = tl[1] + r + radius + r + gap
+    c = (min(c[0], right_limit), max(c[1], top_limit))
+    draw.ellipse([c[0] - radius, c[1] - radius, c[0] + radius, c[1] + radius],
+                 outline=color, width=w)
 
-    # 클릭 점 + 리플
-    if detail:
-        c = (s(DOT_CENTER[0]), s(DOT_CENTER[1]))
-        dr = s(0.052)
-        # 리플은 몸체 안으로 잘라 넣는다
-        ripple = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        rd = ImageDraw.Draw(ripple)
-        for k, alpha in ((2.1, 60), (1.6, 130)):
-            rr = dr * k
-            rd.ellipse([c[0] - rr, c[1] - rr, c[0] + rr, c[1] + rr],
-                       outline=(255, 255, 255, alpha), width=round(s(0.011)))
-        clipped = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        clipped.paste(ripple, (0, 0), ImageChops.multiply(ripple.getchannel("A"), mask))
-        canvas.alpha_composite(clipped)
-        draw = ImageDraw.Draw(canvas)
-        ring = dr + s(0.016)
-        draw.ellipse([c[0] - ring, c[1] - ring, c[0] + ring, c[1] + ring], fill=DOT_RING)
-        draw.ellipse([c[0] - dr, c[1] - dr, c[0] + dr, c[1] + dr], fill=DOT)
-    else:
-        c = (s(0.70), s(0.19))
-        dr = s(0.105)
-        ring = dr + s(0.045)
-        draw.ellipse([c[0] - ring, c[1] - ring, c[0] + ring, c[1] + ring], fill=DOT_RING)
-        draw.ellipse([c[0] - dr, c[1] - dr, c[0] + dr, c[1] + dr], fill=DOT)
-
-    return canvas.resize((px, px), Image.LANCZOS)
-
-
-def shrink(points, d):
-    """다각형을 무게중심 쪽으로 d만큼 대략 줄인다 (외곽선 안쪽 정리용)."""
-    cx = sum(p[0] for p in points) / len(points)
-    cy = sum(p[1] for p in points) / len(points)
-    out = []
-    for x, y in points:
-        vx, vy = cx - x, cy - y
-        length = (vx * vx + vy * vy) ** 0.5 or 1
-        out.append((x + vx / length * d, y + vy / length * d))
-    return out
+    # BOX(면적 평균): LANCZOS는 날카로운 선 옆에 회색 링잉을 남긴다
+    return canvas.resize((px, px), Image.BOX)
 
 
 def main():
-    render(1024, detail=True).save(ASSETS / "app-icon.png")
-    for px in (16, 20, 24):
-        render(px, detail=False).save(ASSETS / f"app-icon-{px}.png")
-    print("written:", ASSETS / "app-icon.png", "+ 16/20/24")
+    for suffix, color in (("", BLACK), ("-dark", WHITE)):
+        render(1024, color).save(ASSETS / f"app-icon{suffix}.png")
+        for px in SMALL_SIZES:
+            render(px, color).save(ASSETS / f"app-icon{suffix}-{px}.png")
+    print("written: assets/app-icon[-dark].png +", "/".join(map(str, SMALL_SIZES)))
 
 
 if __name__ == "__main__":

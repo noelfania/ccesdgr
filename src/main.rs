@@ -36,7 +36,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowW, GetMessageW, IsDialogMessageW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SetProcessDPIAware,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, HHOOK, MB_ICONERROR, MB_OK, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_APP,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
+    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_SETTINGCHANGE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
@@ -258,8 +258,8 @@ fn create_main_window(instance: HINSTANCE) -> HWND {
         style: CS_HREDRAW | CS_VREDRAW,
         lpfnWndProc: Some(main_proc),
         hInstance: instance,
-        hIcon: win::app_icon(false),
-        hIconSm: win::app_icon(true),
+        hIcon: win::app_icon(false, false),
+        hIconSm: win::app_icon(true, false),
         lpszClassName: class_name.as_ptr(),
         ..unsafe { std::mem::zeroed() }
     };
@@ -338,6 +338,11 @@ unsafe extern "system" fn main_proc(
         }
         WM_MOUSE_CLICKED => {
             handle_mouse_click(lparam);
+            0
+        }
+        // 작업표시줄 밝기 전환 시 트레이 아이콘(검정/흰색 선) 교체
+        WM_SETTINGCHANGE if is_color_set_change(lparam) => {
+            tray::refresh_icon(hwnd);
             0
         }
         WM_HOTKEY => {
@@ -502,6 +507,19 @@ unsafe fn cleanup(hwnd: HWND) {
             DestroyWindow(effect_hwnd);
         }
     }
+}
+
+/// WM_SETTINGCHANGE의 lParam이 "ImmersiveColorSet"(테마/색 변경)인지
+unsafe fn is_color_set_change(lparam: LPARAM) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    let text = lparam as *const u16;
+    let mut len = 0;
+    while len < 64 && *text.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(text, len)) == "ImmersiveColorSet"
 }
 
 fn show_error(hwnd: HWND, message: &str) {

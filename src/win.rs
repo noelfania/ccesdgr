@@ -15,6 +15,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// exe·트레이 공용 아이콘 (assets/icon-entry-3.png → build.rs ICO)
 pub const APP_ICON_ID: usize = 1;
+/// 어두운 작업표시줄용 흰색 선 아이콘
+pub const APP_ICON_DARK_ID: usize = 2;
 
 pub fn module_handle() -> HINSTANCE {
     unsafe { GetModuleHandleW(null()) }
@@ -278,31 +280,60 @@ mod tests {
     }
 }
 
-/// 앱 아이콘을 시스템 DPI에 맞는 크기로 로드 (small = 트레이/제목줄용).
+/// 앱 아이콘을 시스템 DPI에 맞는 크기로 로드 (small = 트레이/제목줄용, dark = 흰색 선 버전).
 /// LoadIconW는 항상 32px(SM_CXICON)을 골라 트레이에서 축소·번지므로 LoadIconMetric 사용.
 /// 프로세스 수명 동안 캐시한다.
-pub fn app_icon(small: bool) -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+pub fn app_icon(small: bool, dark: bool) -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use windows_sys::Win32::UI::Controls::{LoadIconMetric, LIM_LARGE, LIM_SMALL};
     use windows_sys::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
 
-    static SMALL: AtomicIsize = AtomicIsize::new(0);
-    static LARGE: AtomicIsize = AtomicIsize::new(0);
-    let cache = if small { &SMALL } else { &LARGE };
+    // [small][dark]
+    static CACHE: [AtomicIsize; 4] = [
+        AtomicIsize::new(0),
+        AtomicIsize::new(0),
+        AtomicIsize::new(0),
+        AtomicIsize::new(0),
+    ];
+    let cache = &CACHE[(small as usize) * 2 + dark as usize];
     let cached = cache.load(Ordering::Relaxed);
     if cached != 0 {
         return cached as _;
     }
 
+    let id = if dark { APP_ICON_DARK_ID } else { APP_ICON_ID };
     let mut icon = null_mut();
     let metric = if small { LIM_SMALL } else { LIM_LARGE };
-    let hr = unsafe { LoadIconMetric(module_handle(), resource_id(APP_ICON_ID), metric, &mut icon) };
+    let hr = unsafe { LoadIconMetric(module_handle(), resource_id(id), metric, &mut icon) };
     if hr < 0 || icon.is_null() {
-        icon = unsafe { LoadIconW(module_handle(), resource_id(APP_ICON_ID)) };
+        icon = unsafe { LoadIconW(module_handle(), resource_id(id)) };
     }
     if icon.is_null() {
         icon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
     }
     cache.store(icon as isize, Ordering::Relaxed);
     icon
+}
+
+/// 작업표시줄이 밝은 테마인지 (`HKCU\...\Themes\Personalize\SystemUsesLightTheme`).
+/// 값이 없으면 Windows 11 기본값인 밝은 테마로 본다.
+pub fn taskbar_is_light() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+    let key = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = to_wide("SystemUsesLightTheme");
+    let mut data: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            &mut data as *mut u32 as *mut _,
+            &mut size,
+        )
+    };
+    status != 0 || data != 0
 }
