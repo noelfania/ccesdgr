@@ -14,7 +14,7 @@ Facts only — no procedures. Schema SSOT for fields; behavior overview in [arch
 |------|--------|
 | Path | `%APPDATA%\GMTL Mouse Click\config.json` |
 | Env fallback | If `APPDATA` unset → `LOCALAPPDATA`; if both unset → process cwd. Then join `GMTL Mouse Click\config.json` (single path, not multi-file search) |
-| Corrupt file | Parse failure → copied to `config.json.bak`, app starts with defaults |
+| Corrupt file | Parse or read failure (other than file not found) → copied to `config.json.bak`, app starts with defaults |
 | Atomic save | Written to `config.json.tmp`, then renamed over `config.json` |
 | Schema | `AppConfig` in [`src/config.rs`](../../src/config.rs) |
 
@@ -36,6 +36,12 @@ Facts only — no procedures. Schema SSOT for fields; behavior overview in [arch
 | `gif_even_size` | default true |
 | `recent_left_colors` / `recent_right_colors` | max 3 each |
 | `capture_frame` | optional; last GIF frame rect + `bar_pos` (`top` \| `bottom`) |
+| `gif_fps` | 5, 10, 15 or 20 (other values snap to the nearest), default 10 |
+| `snapshot_save_png` | default false — also save snapshots as PNG |
+| `snapshot_output_path` | default `%USERPROFILE%\Downloads`; also used by `Ctrl+S` in annotate mode |
+| `hotkeys` | `record` / `snapshot` / `annotate`, each `{ "modifiers", "key" }`; defaults `Ctrl+Alt+Shift+R` / `C` / `A` |
+
+`hotkeys.*.modifiers` uses `RegisterHotKey` values (Alt 1, Ctrl 2, Shift 4, Win 8); `key` is a virtual-key code. The Shortcuts page cannot enter Win, so opening that page and saving drops a hand-edited Win modifier.
 
 ### capture_frame example
 

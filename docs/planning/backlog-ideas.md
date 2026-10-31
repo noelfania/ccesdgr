@@ -32,7 +32,6 @@ Raw notes and open problems. **Shipped items** → [CHANGELOG.md](../../CHANGELO
 - Validate on other DPI/monitor setups
 - Default scale/FPS policy (memory vs quality)
 - 1080p 15fps, 60s GIF under ~1GB RAM target
-- User-configurable FPS (default today is ~10 FPS / 100ms)
 - Min Windows 10 build TBD
 
 ## Refactor ideas
@@ -48,6 +47,7 @@ Raw notes and open problems. **Shipped items** → [CHANGELOG.md](../../CHANGELO
 
 ## Done (see CHANGELOG / incidents)
 
+- User-configurable GIF FPS (`gif_fps`), snapshot PNG saving, customizable shortcuts
 - Encoder on its own thread with bounded queue; lagging encoder slows capture instead of dropping, delays from real time
 - `CAPTUREBLT` for GIF/snapshot: not needed — verified 2026-10-17 on Windows 11 that `SRCCOPY` alone captures layered windows (click-effect overlay); adding it only risks cursor flicker
 

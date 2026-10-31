@@ -19,7 +19,7 @@ cargo build --release
 - Click effect visible (if enabled)
 - Settings save to `config.json`
 - GIF frame, snapshot, and annotate flows (if touched)
-- Hotkeys if touched: `Ctrl+Alt+Shift+C` (snapshot), `Ctrl+Alt+Shift+A` (annotate)
+- Hotkeys if touched: defaults `Ctrl+Alt+Shift+R` (record), `Ctrl+Alt+Shift+C` (snapshot), `Ctrl+Alt+Shift+A` (annotate); change one in Settings > Shortcuts and retry
 
 ## Automated tests
 

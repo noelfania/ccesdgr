@@ -49,6 +49,11 @@ pub fn select_region(owner: HWND) -> Option<RECT> {
         return None;
     }
 
+    // 선택 중 단축키를 다시 눌러도 첫 오버레이 상태를 덮어쓰지 않는다.
+    if STATE.lock().expect("select mutex poisoned").is_some() {
+        return None;
+    }
+
     let instance = unsafe { GetModuleHandleW(null()) };
     let class_name = win::to_wide(CLASS_NAME);
     let class = WNDCLASSEXW {
@@ -194,6 +199,15 @@ unsafe extern "system" fn select_proc(
             0
         }
         WM_LBUTTONUP => {
+            // 오버레이가 뜨기 전에 누른 버튼을 뗀 경우는 무시 (원점부터 잘못 선택 방지)
+            let dragging = STATE
+                .lock()
+                .expect("select mutex poisoned")
+                .as_ref()
+                .is_some_and(|state| state.dragging);
+            if !dragging {
+                return 0;
+            }
             ReleaseCapture();
             {
                 let mut state = STATE.lock().expect("select mutex poisoned");

@@ -14,12 +14,14 @@ mod win;
 
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
+use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Controls::{
@@ -29,18 +31,19 @@ use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, FindWindowW, GetMessageW, IsDialogMessageW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SetProcessDPIAware,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW,
-    CW_USEDEFAULT, HHOOK, MB_ICONERROR, MB_OK, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_APP,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY, WM_SETTINGCHANGE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
+    CW_USEDEFAULT, HHOOK, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MSG,
+    MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ENDSESSION,
+    WM_HOTKEY, WM_SETTINGCHANGE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
-use crate::config::{AppConfig, CaptureFrameConfig};
+use crate::config::{AppConfig, CaptureFrameConfig, HotkeyBindings};
 
 const MAIN_CLASS_NAME: &str = "GMTLMouseClickMainWindow";
 const SINGLE_INSTANCE_MUTEX: &str = r"Local\GMTLMouseClick.SingleInstance";
@@ -49,14 +52,19 @@ const WM_MOUSE_CLICKED: u32 = WM_APP + 2;
 const HOTKEY_SNIP: i32 = 1;
 const HOTKEY_DRAW: i32 = 2;
 const HOTKEY_RECORD: i32 = 3;
-const VK_C: u32 = 0x43;
-const VK_A: u32 = 0x41;
-const VK_R: u32 = 0x52;
 const BUTTON_LEFT: usize = 1;
 const BUTTON_RIGHT: usize = 2;
+/// 종료 시 인코더 대기 시간 (대형 영역은 큐 8프레임 처리에 수 초 걸린다)
+const EXIT_ENCODER_WAIT: Duration = Duration::from_secs(30);
+/// Windows 종료 중에는 OS가 프로세스를 곧 끝내므로 짧게만 기다린다.
+const END_SESSION_ENCODER_WAIT: Duration = Duration::from_secs(4);
 
 static APP_STATE: OnceLock<Mutex<AppState>> = OnceLock::new();
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+/// WM_ENDSESSION과 WM_DESTROY 양쪽에서 정리가 두 번 돌지 않게 한다.
+static CLEANED_UP: AtomicBool = AtomicBool::new(false);
+/// 설정의 Shortcuts 페이지에서 조합을 입력받는 동안 전역 단축키 해제
+static HOTKEYS_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 struct AppState {
     config: AppConfig,
@@ -85,6 +93,10 @@ fn main() {
 
     enable_dpi_awareness();
     init_common_controls();
+    // 폴더 찾아보기(BIF_NEWDIALOGSTYLE)는 COM 초기화를 요구한다.
+    unsafe {
+        CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
+    }
 
     let config = AppConfig::load();
     if config.start_with_windows {
@@ -105,12 +117,12 @@ fn main() {
         show_error(hwnd, "Failed to register the mouse hook.");
     }
 
-    let failed_hotkeys = register_hotkeys(hwnd);
+    let failed_hotkeys = register_hotkeys(hwnd, &config.hotkeys);
     if !failed_hotkeys.is_empty() {
         show_error(
             hwnd,
             &format!(
-                "Failed to register global hotkeys (already used by another app?):\n{}",
+                "Failed to register global hotkeys (already used by another app?):\n{}\n\nYou can change them in Settings > Shortcuts.",
                 failed_hotkeys.join("\n")
             ),
         );
@@ -126,6 +138,9 @@ fn main() {
 
     tray::add(hwnd);
     tray::taskbar_created_message();
+    if effect_hwnd.is_null() {
+        tray::notify_error("Click effects are unavailable: failed to create the overlay window.");
+    }
     message_loop();
 }
 
@@ -198,6 +213,20 @@ pub fn click_effects_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// 현재 적용된 설정의 복사본 (앱 시작 전이면 None)
+pub fn current_config() -> Option<AppConfig> {
+    APP_STATE
+        .get()
+        .map(|state| state.lock().expect("app state mutex poisoned").config.clone())
+}
+
+/// 표시 문자열용 현재 단축키
+pub fn hotkey_bindings() -> HotkeyBindings {
+    current_config()
+        .map(|config| config.hotkeys)
+        .unwrap_or_default()
+}
+
 /// 트레이 메뉴의 Click Effects 토글 — 설정 파일에도 즉시 저장
 fn toggle_click_effects(hwnd: HWND) {
     let Some(state) = APP_STATE.get() else {
@@ -205,20 +234,48 @@ fn toggle_click_effects(hwnd: HWND) {
     };
     let mut state = state.lock().expect("app state mutex poisoned");
     state.config.click_effect_enabled = !state.config.click_effect_enabled;
-    if let Err(error) = state.config.save() {
-        drop(state);
+    let enabled = state.config.click_effect_enabled;
+    let saved = state.config.save();
+    drop(state);
+    // 열려 있는 설정 창이 OK로 이전 값을 되돌리지 않게 알려 준다.
+    settings::sync_click_effect_toggle(enabled);
+    if let Err(error) = saved {
         show_error(hwnd, &format!("Failed to save config file: {error}"));
     }
 }
 
-pub fn apply_settings(config: AppConfig) -> Result<(), String> {
-    startup::set_enabled(config.start_with_windows)
-        .map_err(|error| format!("Failed to save startup setting: {error}"))?;
-    config
-        .save()
-        .map_err(|error| format!("Failed to save config file: {error}"))?;
+pub fn apply_settings(mut config: AppConfig) -> Result<(), String> {
+    config.hotkeys.validate()?;
+    let previous = current_config();
+    if let Some(previous) = &previous {
+        // 설정 창이 열려 있는 동안 바뀐 프레임 위치를 이전 값으로 덮어쓰지 않는다.
+        config.capture_frame = previous.capture_frame.clone();
+    }
+    let previous_hotkeys = previous
+        .as_ref()
+        .map(|previous| previous.hotkeys)
+        .unwrap_or_default();
 
-    let mut config = config;
+    let hotkeys_changed = config.hotkeys != previous_hotkeys;
+    if hotkeys_changed {
+        replace_hotkeys(&config.hotkeys, &previous_hotkeys)?;
+    }
+
+    let saved = startup::set_enabled(config.start_with_windows)
+        .map_err(|error| format!("Failed to save startup setting: {error}"))
+        .and_then(|()| {
+            config
+                .save()
+                .map_err(|error| format!("Failed to save config file: {error}"))
+        });
+    if let Err(message) = saved {
+        if hotkeys_changed {
+            // 저장 실패 시 다음 실행과 어긋나지 않도록 이전 조합으로 되돌린다.
+            let _ = replace_hotkeys(&previous_hotkeys, &config.hotkeys);
+        }
+        return Err(message);
+    }
+
     config.clamp_values();
 
     if let Some(state) = APP_STATE.get() {
@@ -229,18 +286,65 @@ pub fn apply_settings(config: AppConfig) -> Result<(), String> {
 }
 
 /// 등록에 실패한 핫키 이름 목록을 돌려준다.
-fn register_hotkeys(hwnd: HWND) -> Vec<&'static str> {
-    let modifiers = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT;
+fn register_hotkeys(hwnd: HWND, bindings: &HotkeyBindings) -> Vec<String> {
     let hotkeys = [
-        (HOTKEY_SNIP, VK_C, "Ctrl+Alt+Shift+C (Snapshot)"),
-        (HOTKEY_DRAW, VK_A, "Ctrl+Alt+Shift+A (Annotate)"),
-        (HOTKEY_RECORD, VK_R, "Ctrl+Alt+Shift+R (Record GIF)"),
+        (HOTKEY_SNIP, bindings.snapshot, "Snapshot"),
+        (HOTKEY_DRAW, bindings.annotate, "Annotate"),
+        (HOTKEY_RECORD, bindings.record, "Record GIF"),
     ];
     hotkeys
         .into_iter()
-        .filter(|(id, key, _)| unsafe { RegisterHotKey(hwnd, *id, modifiers, *key) } == 0)
-        .map(|(_, _, name)| name)
+        .filter(|(id, hotkey, _)| unsafe {
+            RegisterHotKey(
+                hwnd,
+                *id,
+                hotkey.modifiers as HOT_KEY_MODIFIERS | MOD_NOREPEAT,
+                hotkey.key,
+            )
+        } == 0)
+        .map(|(_, hotkey, name)| format!("{} ({name})", hotkey.label()))
         .collect()
+}
+
+/// 새 조합으로 교체. 하나라도 실패하면 이전 조합을 복원하고 실패 항목을 돌려준다.
+fn replace_hotkeys(new: &HotkeyBindings, previous: &HotkeyBindings) -> Result<(), String> {
+    let hwnd = main_hwnd();
+    unregister_hotkeys(hwnd);
+    let failed = register_hotkeys(hwnd, new);
+    let suspended = HOTKEYS_SUSPENDED.load(Ordering::Relaxed);
+    if !failed.is_empty() {
+        unregister_hotkeys(hwnd);
+        if !suspended {
+            register_hotkeys(hwnd, previous);
+        }
+        return Err(format!(
+            "These shortcuts could not be registered (already used by another app?):\n{}",
+            failed.join("\n")
+        ));
+    }
+    if suspended {
+        unregister_hotkeys(hwnd);
+    }
+    Ok(())
+}
+
+/// Shortcuts 페이지에서 기존 조합도 입력할 수 있도록 등록을 잠시 해제하거나 복원한다.
+pub fn set_hotkeys_suspended(suspended: bool) {
+    if HOTKEYS_SUSPENDED.swap(suspended, Ordering::Relaxed) == suspended {
+        return;
+    }
+    let hwnd = main_hwnd();
+    unregister_hotkeys(hwnd);
+    if suspended {
+        return;
+    }
+    let failed = register_hotkeys(hwnd, &hotkey_bindings());
+    if !failed.is_empty() {
+        tray::notify_error(&format!(
+            "Failed to restore shortcuts: {}",
+            failed.join(", ")
+        ));
+    }
 }
 
 fn unregister_hotkeys(hwnd: HWND) {
@@ -329,9 +433,7 @@ unsafe extern "system" fn main_proc(
                 tray::ID_TRAY_SNIP => snip::run(hwnd),
                 tray::ID_TRAY_DRAW => draw::show(),
                 tray::ID_TRAY_TOGGLE_EFFECT => toggle_click_effects(hwnd),
-                tray::ID_TRAY_EXIT => {
-                    DestroyWindow(hwnd);
-                }
+                tray::ID_TRAY_EXIT => exit_app(hwnd),
                 _ => {}
             }
             0
@@ -345,6 +447,19 @@ unsafe extern "system" fn main_proc(
             tray::refresh_icon(hwnd);
             0
         }
+        WM_CLOSE => {
+            exit_app(hwnd);
+            0
+        }
+        // 로그오프/종료: 이후 WM_DESTROY가 오지 않을 수 있어 여기서 마무리
+        WM_ENDSESSION => {
+            if wparam != 0 {
+                cleanup(hwnd, END_SESSION_ENCODER_WAIT, false);
+            }
+            0
+        }
+        // 저장 대화상자·오류 창이 떠 있는 동안에는 새 작업을 시작하지 않는다.
+        WM_HOTKEY if capture_ui::is_saving() => 0,
         WM_HOTKEY => {
             match wparam as i32 {
                 HOTKEY_SNIP => snip::run(hwnd),
@@ -359,7 +474,7 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_DESTROY => {
-            cleanup(hwnd);
+            cleanup(hwnd, EXIT_ENCODER_WAIT, true);
             PostQuitMessage(0);
             0
         }
@@ -488,24 +603,64 @@ unsafe fn open_record(hwnd: HWND) {
     capture_ui::show(hwnd, config);
 }
 
-unsafe fn cleanup(hwnd: HWND) {
+unsafe fn exit_app(hwnd: HWND) {
+    // 저장 대화상자 위에서 종료하면 대화상자가 취소로 닫혀 녹화를 잃는다.
+    if capture_ui::is_saving() {
+        tray::notify("Finish saving the GIF before exiting.");
+        return;
+    }
+    // DestroyWindow는 소유 창(캡처 프레임)을 WM_DESTROY보다 먼저 파괴하므로, 녹화 파일 마무리를 먼저 한다.
+    cleanup(hwnd, EXIT_ENCODER_WAIT, true);
+    DestroyWindow(hwnd);
+}
+
+unsafe fn cleanup(hwnd: HWND, encoder_wait: Duration, interactive: bool) {
+    if CLEANED_UP.swap(true, Ordering::Relaxed) {
+        return;
+    }
     unregister_hotkeys(hwnd);
     tray::remove(hwnd);
-    // 녹화 중 종료해도 GIF 트레일러가 기록되도록 잠시 기다린다.
-    recorder::stop_and_wait(std::time::Duration::from_secs(3));
-    capture_ui::close();
-    MAIN_HWND.store(0, Ordering::Relaxed);
 
-    if let Some(state) = APP_STATE.get() {
+    // 메인 스레드가 인코더를 기다리는 동안 훅이 시스템 마우스 입력을 지연시키지 않도록 먼저 해제
+    let effect_hwnd = APP_STATE.get().map(|state| {
         let state = state.lock().expect("app state mutex poisoned");
         let mouse_hook = state.mouse_hook as HHOOK;
-        let effect_hwnd = state.effect_hwnd as HWND;
         if !mouse_hook.is_null() {
             UnhookWindowsHookEx(mouse_hook);
         }
+        state.effect_hwnd as HWND
+    });
+
+    // 녹화 중 종료해도 GIF 트레일러가 기록되도록 기다린 뒤 파일을 제자리로 옮긴다.
+    let finished = recorder::stop_and_wait(encoder_wait);
+    let outcome = capture_ui::finalize_on_exit(finished);
+    // 안내 창의 메시지 루프에서 폴링 타이머가 다시 돌지 않도록 창을 먼저 닫는다.
+    capture_ui::close();
+    if interactive {
+        match outcome {
+            capture_ui::ExitOutcome::Nothing => {}
+            capture_ui::ExitOutcome::Saved(path) => show_message(
+                &format!("The recording in progress was saved to:\n{}", path.display()),
+                MB_ICONINFORMATION,
+            ),
+            capture_ui::ExitOutcome::Problem(message) => show_message(&message, MB_ICONWARNING),
+        }
+    }
+    MAIN_HWND.store(0, Ordering::Relaxed);
+
+    if let Some(effect_hwnd) = effect_hwnd {
         if !effect_hwnd.is_null() {
             DestroyWindow(effect_hwnd);
         }
+    }
+}
+
+/// 트레이 아이콘이 사라진 종료 단계용 안내 (풍선 알림을 쓸 수 없다)
+fn show_message(message: &str, icon: u32) {
+    let title = win::to_wide("GMTL Mouse Click");
+    let message = win::to_wide(message);
+    unsafe {
+        MessageBoxW(null_mut(), message.as_ptr(), title.as_ptr(), MB_OK | icon);
     }
 }
 

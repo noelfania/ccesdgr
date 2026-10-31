@@ -14,7 +14,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     HDC, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DrawIcon, GetCursorInfo, CURSORINFO, CURSOR_SHOWING,
+    DrawIcon, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, HCURSOR, ICONINFO,
 };
 
 use crate::config::{MAX_GIF_TIMESTAMP_FONT_SIZE, MIN_GIF_TIMESTAMP_FONT_SIZE};
@@ -48,6 +48,7 @@ pub fn start(
     output_path: PathBuf,
     show_timestamp: bool,
     timestamp_font_size: i32,
+    fps: u32,
 ) {
     if RECORDING.swap(true, Ordering::SeqCst) {
         return; // 이미 녹화 중
@@ -60,7 +61,7 @@ pub fn start(
 
     let handle = thread::spawn(move || {
         let frame_count =
-            match record_loop(region, output_path, show_timestamp, timestamp_font_size) {
+            match record_loop(region, output_path, show_timestamp, timestamp_font_size, fps) {
                 Ok(count) => count,
                 Err(message) => {
                     *LAST_ERROR.lock().expect("recorder mutex poisoned") = Some(message);
@@ -78,17 +79,20 @@ pub fn stop() {
 }
 
 /// 종료 시 GIF 트레일러가 기록되도록 녹화 스레드 종료를 최대 `timeout`까지 기다린다.
-pub fn stop_and_wait(timeout: Duration) {
+/// 시간 안에 끝나지 않으면 false (파일이 잘릴 수 있음).
+pub fn stop_and_wait(timeout: Duration) -> bool {
     stop();
     let deadline = Instant::now() + timeout;
     while is_recording() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
-    if !is_recording() {
-        if let Some(handle) = WORKER.lock().expect("recorder mutex poisoned").take() {
-            let _ = handle.join();
-        }
+    if is_recording() {
+        return false;
     }
+    if let Some(handle) = WORKER.lock().expect("recorder mutex poisoned").take() {
+        let _ = handle.join();
+    }
+    true
 }
 
 /// 녹화 시작 후 경과 시간 (녹화 중일 때만)
@@ -137,6 +141,7 @@ fn record_loop(
     output_path: PathBuf,
     show_timestamp: bool,
     timestamp_font_size: i32,
+    fps: u32,
 ) -> Result<usize, String> {
     let file = File::create(&output_path)
         .map_err(|error| format!("Failed to create {}: {error}", output_path.display()))?;
@@ -171,7 +176,7 @@ fn record_loop(
         Ok(frame_count)
     });
 
-    let frame_interval = Duration::from_millis(100); // 10 FPS
+    let frame_interval = frame_interval_for_fps(fps);
     let default_delay = frame_delay_from_duration(frame_interval);
     let recording_start = Instant::now();
     let expected_len = w as usize * h as usize * 4;
@@ -231,12 +236,16 @@ fn record_loop(
         .map_err(|_| "The GIF encoder stopped unexpectedly.".to_string())?
 }
 
-fn bgra_to_rgb(bgra: &[u8]) -> Vec<u8> {
+pub fn bgra_to_rgb(bgra: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(bgra.len() / 4 * 3);
     for pixel in bgra.chunks_exact(4) {
         rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
     }
     rgb
+}
+
+fn frame_interval_for_fps(fps: u32) -> Duration {
+    Duration::from_millis(1000 / u64::from(fps.max(1)))
 }
 
 fn frame_delay_from_duration(duration: Duration) -> u16 {
@@ -267,9 +276,33 @@ struct Capturer {
     width: i32,
     height: i32,
     pixels: Vec<u8>,
+    /// 마지막 커서 핸들과 핫스팟 (GetIconInfo는 비트맵을 만들므로 바뀔 때만 호출)
+    cursor_hotspot: Option<(HCURSOR, i32, i32)>,
 }
 
 impl Capturer {
+    unsafe fn hotspot_of(&mut self, cursor: HCURSOR) -> (i32, i32) {
+        if let Some((cached, x, y)) = self.cursor_hotspot {
+            if cached == cursor {
+                return (x, y);
+            }
+        }
+        let mut info: ICONINFO = std::mem::zeroed();
+        let (x, y) = if GetIconInfo(cursor, &mut info) != 0 {
+            if !info.hbmMask.is_null() {
+                DeleteObject(info.hbmMask);
+            }
+            if !info.hbmColor.is_null() {
+                DeleteObject(info.hbmColor);
+            }
+            (info.xHotspot as i32, info.yHotspot as i32)
+        } else {
+            (0, 0)
+        };
+        self.cursor_hotspot = Some((cursor, x, y));
+        (x, y)
+    }
+
     fn new(width: i32, height: i32, timestamp_font_size: Option<i32>) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
@@ -314,6 +347,7 @@ impl Capturer {
                 width,
                 height,
                 pixels: vec![0u8; width as usize * height as usize * 4],
+                cursor_hotspot: None,
             })
         }
     }
@@ -343,7 +377,9 @@ impl Capturer {
                 let cx = ci.ptScreenPos.x - x;
                 let cy = ci.ptScreenPos.y - y;
                 if cx >= 0 && cy >= 0 && cx < self.width && cy < self.height {
-                    DrawIcon(self.mem_dc, cx, cy, ci.hCursor);
+                    // ptScreenPos는 핫스팟 위치 — 그리기 좌표는 이미지 좌상단
+                    let (hot_x, hot_y) = self.hotspot_of(ci.hCursor);
+                    DrawIcon(self.mem_dc, cx - hot_x, cy - hot_y, ci.hCursor);
                 }
             }
 
@@ -456,6 +492,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn frame_interval_follows_fps() {
+        assert_eq!(frame_interval_for_fps(5), Duration::from_millis(200));
+        assert_eq!(frame_interval_for_fps(10), Duration::from_millis(100));
+        assert_eq!(frame_interval_for_fps(20), Duration::from_millis(50));
+        assert_eq!(frame_interval_for_fps(0), Duration::from_millis(1000));
+    }
+
+    #[test]
     fn frame_delay_rounds_to_centiseconds() {
         assert_eq!(frame_delay_from_duration(Duration::from_millis(100)), 10);
         assert_eq!(frame_delay_from_duration(Duration::from_millis(104)), 10);
@@ -486,7 +530,7 @@ mod tests {
             width: 320,
             height: 200,
         };
-        start(region, path.clone(), true, 14);
+        start(region, path.clone(), true, 14, 10);
         thread::sleep(Duration::from_millis(1000));
         stop_and_wait(Duration::from_secs(5));
 

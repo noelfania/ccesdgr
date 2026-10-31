@@ -148,14 +148,15 @@ pub fn show_menu(hwnd: HWND) {
         return;
     }
 
+    let hotkeys = crate::hotkey_bindings();
     let settings = win::to_wide("Settings...");
     let record_label = if crate::recorder::is_recording() {
-        win::to_wide("Stop GIF Recording\tCtrl+Alt+Shift+R")
+        win::to_wide(&format!("Stop GIF Recording\t{}", hotkeys.record.label()))
     } else {
-        win::to_wide("Record GIF...\tCtrl+Alt+Shift+R")
+        win::to_wide(&format!("Record GIF...\t{}", hotkeys.record.label()))
     };
-    let snip = win::to_wide("Snapshot...\tCtrl+Alt+Shift+C");
-    let draw = win::to_wide("Annotate Screen\tCtrl+Alt+Shift+A");
+    let snip = win::to_wide(&format!("Snapshot...\t{}", hotkeys.snapshot.label()));
+    let draw = win::to_wide(&format!("Annotate Screen\t{}", hotkeys.annotate.label()));
     let effects = win::to_wide("Click Effects");
     let effects_flag = if crate::click_effects_enabled() {
         MF_CHECKED
