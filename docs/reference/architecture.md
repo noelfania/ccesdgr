@@ -206,7 +206,9 @@ flowchart TD
   - `Ctrl+Alt+Shift+R` → GIF: 프레임 열기 → (열려 있으면) 녹화 시작 → (녹화 중이면) 중지
   - `Ctrl+Alt+Shift+C` → 스냅샷 (`snip::run`)
   - `Ctrl+Alt+Shift+A` → 화면 주석 토글 (`draw::show`)
-  - 등록 실패 시 실패한 조합만 나열해 경고 후 계속.
+  - 위 조합은 기본값이며 `config.hotkeys`와 설정의 Shortcuts 페이지에서 변경한다. 그 페이지가 열린 동안 등록을 해제한다(`set_hotkeys_suspended`).
+  - 시작 시 등록 실패는 실패한 조합만 나열해 경고 후 계속. 설정 변경 시 실패하면 이전 조합을 복원하고 저장하지 않는다(`replace_hotkeys`).
+  - 저장 대화상자 등 녹화 마무리 중(`capture_ui::is_saving`)에는 핫키와 트레이 Exit를 처리하지 않는다.
 - **녹화 중지 경로 통일**: 트레이/핫키 중지는 `capture_ui::request_stop()` → ■ 버튼과 같은 `poll_done` 저장 흐름.
 - **트레이 메뉴**: 단축키 표시, Settings 굵게(기본 항목), `Click Effects` 체크 토글(즉시 `config.json` 저장).
 - **트레이 아이콘 테마**: `win::taskbar_is_light()`(HKCU `Themes\Personalize\SystemUsesLightTheme`, 없으면 밝음)로 검정(ID 1)/흰색(ID 2) 선 아이콘 선택. `WM_SETTINGCHANGE("ImmersiveColorSet")` 수신 시 `tray::refresh_icon`.
@@ -221,8 +223,8 @@ flowchart TD
 1. 트레이에서 녹화 선택 → 메인이 `capture_ui::show` 호출(이미 열려 있으면 포커스만). 녹화 중이면 §5처럼 중지만.
 2. **`GMTLCaptureUI`** 팝업: 선택 사각형(`RECT sel`), 상·하단 툴바, 녹화/취소, 프리셋·비율 콤보 등. 이전 `capture_frame`이 있으면 복원(불가 시 주 모니터 중앙 640×480).
 3. 녹화 시작 시 파일명 `gif-YYYYMMDD-HHMMSS.gif`. `ask_gif_save_path`가 OFF면 폴더는 `gif_output_path`에 바로 저장; ON이면 `%TEMP%`에 기록 후 종료 시 Save As (`win::save_gif_dialog`).
-4. 캡처 영역은 프레임 내부에서 `BORDER` 안쪽 픽셀; `gif_even_size` 켜면 출력 가로·세로를 짝수로 보정.
-5. **`recorder::start`**: 백그라운드 스레드에서 약 **100ms 간격(10 FPS)** 으로 프레임 캡처(`Capturer`: DC·비트맵·폰트를 녹화 동안 재사용), 인코딩은 별도 스레드(`sync_channel` 8프레임). 큐가 차면 캡처가 기다리고, 프레임 지연은 실제 경과 시간으로 계산. 종료 시 flush. 실패는 `take_last_error()`로 UI에 전달, 앱 종료 시 `stop_and_wait`.
+4. 캡처 영역은 프레임 내부에서 `BORDER` 안쪽 픽셀; `gif_even_size` 켜면 출력 가로·세로를 짝수로 보정. 툴바·최소 크기·핸들은 모니터 DPI로 스케일(`sc`, `WM_DPICHANGED`)하고 `BORDER`와 프레임 픽셀 크기는 유지. 리사이즈 핸들은 프레임 안쪽 8곳(`grip_rects`)이며 녹화 시작 전 창 영역에서 빼고 `DwmFlush`로 반영을 기다린다.
+5. **`recorder::start`**: 백그라운드 스레드에서 `gif_fps`(5/10/15/20, 기본 10) 간격으로 프레임 캡처(`Capturer`: DC·비트맵·폰트를 녹화 동안 재사용), 인코딩은 별도 스레드(`sync_channel` 8프레임). 큐가 차면 캡처가 기다리고, 프레임 지연은 실제 경과 시간으로 계산. 종료 시 flush. 실패는 `take_last_error()`로 UI에 전달, 앱 종료·세션 종료 시 `stop_and_wait` 후 `capture_ui::finalize_on_exit`.
 6. 중지 후 `TIMER_POLL`(200ms)로 녹화 스레드 종료 폴링 → UI 복구; **취소** 또는 **프레임 0**이면 출력 파일 삭제.
 7. `ask_gif_save_path` ON이면 `GetSaveFileNameW` — OK 시 temp→선택 경로, Cancel 시 temp 삭제(저장 안 함).
 8. `open_folder_after_save`이면 최종 저장 폴더를 `ShellExecuteW`로 연다(Save As 취소 시 생략).

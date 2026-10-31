@@ -1,7 +1,8 @@
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -18,9 +19,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyCursor, DestroyWindow,
-    GetCursorPos, GetSystemMetrics, KillTimer, LoadCursorW, RegisterClassExW, SetCursor, SetTimer,
-    ShowWindow, WM_TIMER,
-    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, HCURSOR, HTCLIENT, ICONINFO, IDC_ARROW,
+    GetCursorPos, GetSystemMetrics, KillTimer, LoadCursorW, MessageBoxW, RegisterClassExW,
+    SetCursor, SetTimer, ShowWindow, WM_CAPTURECHANGED, WM_TIMER,
+    UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, HCURSOR, HTCLIENT, ICONINFO, IDC_ARROW, IDYES,
+    MB_ICONQUESTION, MB_TOPMOST, MB_YESNO,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
     ULW_ALPHA, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
@@ -54,8 +56,11 @@ const HELP_NONE: u8 = 0;
 const HELP_HINT: u8 = 1;
 const HELP_FULL: u8 = 2;
 static HELP_MODE: AtomicU8 = AtomicU8::new(HELP_NONE);
+/// 닫기 확인 창이 떠 있는 동안 단축키·Esc로 또 띄우지 않는다.
+static CONFIRMING_CLOSE: AtomicBool = AtomicBool::new(false);
 
-const HINT_TEXT: &str = "Annotate mode  ·  F1: shortcuts  ·  Ctrl+C: copy  ·  Esc: exit";
+const HINT_TEXT: &str =
+    "Annotate mode  ·  F1: shortcuts  ·  Ctrl+C: copy  ·  Ctrl+S: save PNG  ·  Esc: exit";
 const HELP_TITLE: &str = "Annotation shortcuts";
 const HELP_ROWS: &[(&str, &str)] = &[
     ("Drag", "Free pen"),
@@ -69,6 +74,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("R G B Y O P W K", "Color (Shift = highlighter)"),
     ("Ctrl+Z", "Undo"),
     ("Ctrl+C", "Copy annotated screen"),
+    ("Ctrl+S", "Save annotated screen as PNG"),
     ("F1", "Show / hide this help"),
     ("Esc", "Exit"),
 ];
@@ -172,6 +178,8 @@ struct DrawState {
     cursor_pos: Option<POINT>,
     current_color: Rgba,
     pen_width: i32,
+    /// 복사·저장 이후 바뀐 내용이 있으면 true (닫기 확인 여부)
+    dirty: bool,
 }
 
 impl DrawState {
@@ -194,15 +202,40 @@ impl DrawState {
                 alpha: 255,
             },
             pen_width: DEFAULT_PEN_WIDTH,
+            dirty: false,
         }
     }
+}
+
+/// 복사·저장하지 않은 주석이 있으면 확인 후 닫는다.
+unsafe fn close_with_confirm(hwnd: HWND) {
+    if CONFIRMING_CLOSE.load(Ordering::Relaxed) {
+        return;
+    }
+    let dirty = STATE.lock().expect("draw mutex poisoned").dirty;
+    if dirty {
+        CONFIRMING_CLOSE.store(true, Ordering::Relaxed);
+        let title = win::to_wide("GMTL Mouse Click");
+        let message = win::to_wide("Discard your annotations?\n\nUse Ctrl+C to copy or Ctrl+S to save them first.");
+        let answer = MessageBoxW(
+            hwnd,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        );
+        CONFIRMING_CLOSE.store(false, Ordering::Relaxed);
+        if answer != IDYES {
+            return;
+        }
+    }
+    DestroyWindow(hwnd);
 }
 
 pub fn show() {
     let existing = DRAW_HWND.load(Ordering::Relaxed);
     if existing != 0 {
         unsafe {
-            DestroyWindow(existing as HWND);
+            close_with_confirm(existing as HWND);
         }
         return;
     }
@@ -216,6 +249,7 @@ pub fn show() {
     }
 
     let Some(background) = (unsafe { capture_screen(left, top, width, height) }) else {
+        crate::tray::notify_error("Annotate failed: could not capture the screen.");
         return;
     };
 
@@ -238,6 +272,7 @@ pub fn show() {
             alpha: 255,
         };
         state.pen_width = DEFAULT_PEN_WIDTH;
+        state.dirty = false;
     }
 
     let instance = unsafe { GetModuleHandleW(null()) };
@@ -272,6 +307,7 @@ pub fn show() {
         )
     };
     if hwnd.is_null() {
+        crate::tray::notify_error("Annotate failed: could not open the overlay window.");
         return;
     }
 
@@ -365,7 +401,6 @@ unsafe extern "system" fn draw_proc(
             0
         }
         WM_LBUTTONUP | WM_RBUTTONUP => {
-            ReleaseCapture();
             let point = point_from_lparam(lparam);
             let should_render = {
                 let mut state = STATE.lock().expect("draw mutex poisoned");
@@ -375,21 +410,37 @@ unsafe extern "system" fn draw_proc(
                         push_undo(&mut state);
                         bake_command(&mut state, &command);
                         state.commands.push(command);
+                        state.dirty = true;
                     }
                     true
                 } else {
                     false
                 }
             };
+            // draft를 확정한 뒤 해제 — WM_CAPTURECHANGED가 진행 중 draft를 버리기 때문
+            ReleaseCapture();
             apply_tool_cursor();
             if should_render {
                 render(hwnd);
             }
             0
         }
+        // 다른 창이 캡처를 가져가면 버튼을 뗀 이벤트가 오지 않으므로 그리던 것을 취소한다.
+        WM_CAPTURECHANGED => {
+            let had_draft = STATE
+                .lock()
+                .expect("draw mutex poisoned")
+                .draft
+                .take()
+                .is_some();
+            if had_draft {
+                render(hwnd);
+            }
+            0
+        }
         WM_KEYDOWN => {
             if wparam as i32 == 0x1b {
-                DestroyWindow(hwnd);
+                close_with_confirm(hwnd);
                 return 0;
             }
             if wparam as u32 == VK_F1_KEY {
@@ -405,6 +456,10 @@ unsafe extern "system" fn draw_proc(
             }
             if is_key_down(VK_CONTROL_KEY) && wparam as u32 == b'C' as u32 {
                 copy_to_clipboard(hwnd);
+                return 0;
+            }
+            if is_key_down(VK_CONTROL_KEY) && wparam as u32 == b'S' as u32 {
+                save_to_png();
                 return 0;
             }
             apply_tool_cursor();
@@ -808,14 +863,60 @@ fn draw_blur_rect(buffer: &mut [u8], width: i32, height: i32, start: POINT, end:
     }
 
     let source = buffer.to_vec();
+    // 픽셀마다 이웃을 다시 더하지 않고 열별 합을 밀어 가며 계산 (화면 크기 블러에서 UI 멈춤 방지)
+    let first_col = (left - BLUR_RADIUS).max(0);
+    let last_col = (right + BLUR_RADIUS).min(width - 1);
+    let mut column_sums = vec![[0u32; 3]; (last_col - first_col + 1) as usize];
+    let add_row = |sums: &mut [[u32; 3]], row: i32, add: bool| {
+        for (sum, col) in sums.iter_mut().zip(first_col..=last_col) {
+            let index = pixel_index(width, col, row);
+            for (channel, value) in sum.iter_mut().zip(&source[index..index + 3]) {
+                if add {
+                    *channel += *value as u32;
+                } else {
+                    *channel -= *value as u32;
+                }
+            }
+        }
+    };
+
+    for row in (top - BLUR_RADIUS).max(0)..=(top + BLUR_RADIUS).min(height - 1) {
+        add_row(&mut column_sums, row, true);
+    }
+
     for y in top..=bottom {
+        if y > top {
+            if y - BLUR_RADIUS - 1 >= 0 {
+                add_row(&mut column_sums, y - BLUR_RADIUS - 1, false);
+            }
+            if y + BLUR_RADIUS < height {
+                add_row(&mut column_sums, y + BLUR_RADIUS, true);
+            }
+        }
+        let rows = ((y + BLUR_RADIUS).min(height - 1) - (y - BLUR_RADIUS).max(0) + 1) as u32;
+
+        let mut window = [0u32; 3];
+        for col in (left - BLUR_RADIUS).max(0)..=(left + BLUR_RADIUS).min(width - 1) {
+            let sum = column_sums[(col - first_col) as usize];
+            window = [window[0] + sum[0], window[1] + sum[1], window[2] + sum[2]];
+        }
         for x in left..=right {
-            let (blue, green, red) =
-                average_neighborhood(&source, width, height, x, y, BLUR_RADIUS);
+            if x > left {
+                if x - BLUR_RADIUS - 1 >= 0 {
+                    let sum = column_sums[(x - BLUR_RADIUS - 1 - first_col) as usize];
+                    window = [window[0] - sum[0], window[1] - sum[1], window[2] - sum[2]];
+                }
+                if x + BLUR_RADIUS < width {
+                    let sum = column_sums[(x + BLUR_RADIUS - first_col) as usize];
+                    window = [window[0] + sum[0], window[1] + sum[1], window[2] + sum[2]];
+                }
+            }
+            let cols = ((x + BLUR_RADIUS).min(width - 1) - (x - BLUR_RADIUS).max(0) + 1) as u32;
+            let count = rows * cols;
             let index = pixel_index(width, x, y);
-            buffer[index] = blue;
-            buffer[index + 1] = green;
-            buffer[index + 2] = red;
+            buffer[index] = (window[0] / count) as u8;
+            buffer[index + 1] = (window[1] / count) as u8;
+            buffer[index + 2] = (window[2] / count) as u8;
             buffer[index + 3] = 255;
         }
     }
@@ -924,6 +1025,7 @@ fn erase_segment(
     }
 }
 
+#[cfg(test)]
 fn average_neighborhood(
     source: &[u8],
     width: i32,
@@ -957,6 +1059,7 @@ fn handle_key(hwnd: HWND, key: u32) -> bool {
             if let Some(previous) = state.undo.pop() {
                 state.commands = previous;
                 state.draft = None;
+                state.dirty = !state.commands.is_empty();
                 recompose_committed(&mut state);
                 true
             } else {
@@ -1371,9 +1474,77 @@ unsafe fn copy_to_clipboard(hwnd: HWND) {
     }
 
     if crate::snip::set_clipboard_bitmap(hwnd, bitmap).is_ok() {
+        STATE.lock().expect("draw mutex poisoned").dirty = false;
         crate::tray::notify("Annotated screen copied to clipboard");
     } else {
         crate::tray::notify_error("Failed to copy the annotation to the clipboard.");
+    }
+}
+
+/// 주석이 합성된 화면을 스냅샷 폴더에 PNG로 저장한다.
+fn save_to_png() {
+    let Some(config) = crate::current_config() else {
+        return;
+    };
+    let (width, height, pixels) = {
+        let state = STATE.lock().expect("draw mutex poisoned");
+        (state.width, state.height, state.committed.clone())
+    };
+    if width <= 0 || height <= 0 || pixels.is_empty() {
+        return;
+    }
+    match crate::snip::save_png_file(
+        Path::new(&config.snapshot_output_path),
+        &pixels,
+        width,
+        height,
+    ) {
+        Ok(path) => {
+            STATE.lock().expect("draw mutex poisoned").dirty = false;
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            crate::tray::notify(&format!("Annotated screen saved: {name}"));
+        }
+        Err(message) => {
+            crate::tray::notify_error(&format!("Failed to save the PNG: {message}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod blur_tests {
+    use super::*;
+
+    #[test]
+    fn sliding_blur_matches_naive_average() {
+        let (width, height) = (40, 30);
+        let mut source = vec![0u8; (width * height * 4) as usize];
+        for (index, byte) in source.iter_mut().enumerate() {
+            *byte = (index.wrapping_mul(2654435761) >> 7) as u8;
+        }
+        // 화면 가장자리에 걸친 영역과 안쪽 영역 모두 확인
+        for (start, end) in [
+            (POINT { x: 0, y: 0 }, POINT { x: 39, y: 29 }),
+            (POINT { x: 10, y: 8 }, POINT { x: 20, y: 15 }),
+            (POINT { x: 35, y: 25 }, POINT { x: 39, y: 29 }),
+        ] {
+            let mut blurred = source.clone();
+            draw_blur_rect(&mut blurred, width, height, start, end);
+            for y in start.y..=end.y {
+                for x in start.x..=end.x {
+                    let (blue, green, red) =
+                        average_neighborhood(&source, width, height, x, y, BLUR_RADIUS);
+                    let index = pixel_index(width, x, y);
+                    assert_eq!(
+                        (blurred[index], blurred[index + 1], blurred[index + 2]),
+                        (blue, green, red),
+                        "pixel ({x},{y})"
+                    );
+                }
+            }
+        }
     }
 }
 

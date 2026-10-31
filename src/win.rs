@@ -6,7 +6,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{COLORREF, HINSTANCE, HWND, RECT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::Dialogs::{
-    GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CXSCREEN, SM_CYSCREEN,
@@ -102,12 +102,29 @@ pub fn clamp_rect_to_virtual_screen(rect: &mut RECT) -> bool {
     }
 }
 
-/// GIF 다른 이름으로 저장. Cancel이면 None.
+/// 크기를 유지한 채 rect를 bounds 안으로 옮긴다. bounds보다 큰 축만 잘린다.
+pub fn shift_rect_into(rect: RECT, bounds: RECT) -> RECT {
+    let shift_axis = |start: i32, end: i32, min: i32, max: i32| {
+        let size = (end - start).min(max - min);
+        let start = start.min(max - size).max(min);
+        (start, start + size)
+    };
+    let (left, right) = shift_axis(rect.left, rect.right, bounds.left, bounds.right);
+    let (top, bottom) = shift_axis(rect.top, rect.bottom, bounds.top, bounds.bottom);
+    RECT {
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// GIF 다른 이름으로 저장. Ok(None)은 취소, Err는 대화상자 오류 코드.
 pub unsafe fn save_gif_dialog(
     owner: HWND,
     initial_dir: &Path,
     default_name: &str,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, u32> {
     let mut file_buf = vec![0u16; 1024];
     let name_wide: Vec<u16> = OsStr::new(default_name)
         .encode_wide()
@@ -149,12 +166,16 @@ pub unsafe fn save_gif_dialog(
     };
 
     if GetSaveFileNameW(&mut ofn) == 0 {
-        return None;
+        // 취소면 0, 그 외는 실패 코드
+        return match CommDlgExtendedError() {
+            0 => Ok(None),
+            code => Err(code),
+        };
     }
 
     let end = file_buf.iter().position(|&c| c == 0).unwrap_or(file_buf.len());
     let path = std::ffi::OsString::from_wide(&file_buf[..end]);
-    Some(PathBuf::from(path))
+    Ok(Some(PathBuf::from(path)))
 }
 
 /// TOPMOST 창에서도 가려지지 않는 툴팁 컨트롤 생성
@@ -272,6 +293,18 @@ mod tests {
         assert_eq!((inter.left, inter.top, inter.right, inter.bottom), (50, 50, 100, 100));
         let far = RECT { left: 200, top: 200, right: 300, bottom: 300 };
         assert!(intersect_rect(a, far).is_none());
+    }
+
+    #[test]
+    fn shift_keeps_size_inside_bounds() {
+        let bounds = RECT { left: -100, top: 0, right: 1000, bottom: 800 };
+        let moved = shift_rect_into(RECT { left: 900, top: -50, right: 1100, bottom: 50 }, bounds);
+        assert_eq!((moved.left, moved.top, moved.right, moved.bottom), (800, 0, 1000, 100));
+        let moved = shift_rect_into(RECT { left: -300, top: 700, right: -100, bottom: 900 }, bounds);
+        assert_eq!((moved.left, moved.top, moved.right, moved.bottom), (-100, 600, 100, 800));
+        // bounds보다 큰 축만 잘린다
+        let moved = shift_rect_into(RECT { left: 0, top: 10, right: 2000, bottom: 20 }, bounds);
+        assert_eq!((moved.left, moved.top, moved.right, moved.bottom), (-100, 10, 1000, 20));
     }
 
     #[test]

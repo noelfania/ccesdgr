@@ -16,11 +16,143 @@ pub const MAX_RIPPLE_LIFETIME: u32 = 60;
 pub const DEFAULT_GIF_TIMESTAMP_FONT_SIZE: i32 = 14;
 pub const MIN_GIF_TIMESTAMP_FONT_SIZE: i32 = 8;
 pub const MAX_GIF_TIMESTAMP_FONT_SIZE: i32 = 24;
+pub const GIF_FPS_CHOICES: [u32; 4] = [5, 10, 15, 20];
+pub const DEFAULT_GIF_FPS: u32 = 10;
+
+// RegisterHotKey 수정자 값과 동일
+pub const HOTKEY_MOD_ALT: u32 = 0x1;
+pub const HOTKEY_MOD_CONTROL: u32 = 0x2;
+pub const HOTKEY_MOD_SHIFT: u32 = 0x4;
+pub const HOTKEY_MOD_WIN: u32 = 0x8;
 
 pub fn default_gif_output_path() -> String {
     std::env::var("USERPROFILE")
         .map(|p| format!("{}\\Downloads", p))
         .unwrap_or_else(|_| ".".to_string())
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HotkeyConfig {
+    pub modifiers: u32,
+    pub key: u32,
+}
+
+impl HotkeyConfig {
+    pub const fn ctrl_alt_shift(key: u32) -> Self {
+        Self {
+            modifiers: HOTKEY_MOD_CONTROL | HOTKEY_MOD_ALT | HOTKEY_MOD_SHIFT,
+            key,
+        }
+    }
+
+    /// 표시용 문자열 (예: "Ctrl+Alt+Shift+R")
+    pub fn label(self) -> String {
+        let mut parts = Vec::new();
+        if self.modifiers & HOTKEY_MOD_WIN != 0 {
+            parts.push("Win".to_string());
+        }
+        if self.modifiers & HOTKEY_MOD_CONTROL != 0 {
+            parts.push("Ctrl".to_string());
+        }
+        if self.modifiers & HOTKEY_MOD_ALT != 0 {
+            parts.push("Alt".to_string());
+        }
+        if self.modifiers & HOTKEY_MOD_SHIFT != 0 {
+            parts.push("Shift".to_string());
+        }
+        parts.push(key_name(self.key));
+        parts.join("+")
+    }
+}
+
+fn key_name(key: u32) -> String {
+    match key {
+        0x08 => "Backspace".to_string(),
+        0x09 => "Tab".to_string(),
+        0x0D => "Enter".to_string(),
+        0x13 => "Pause".to_string(),
+        0x20 => "Space".to_string(),
+        0x21 => "PageUp".to_string(),
+        0x22 => "PageDown".to_string(),
+        0x23 => "End".to_string(),
+        0x24 => "Home".to_string(),
+        0x25 => "Left".to_string(),
+        0x26 => "Up".to_string(),
+        0x27 => "Right".to_string(),
+        0x28 => "Down".to_string(),
+        0x2C => "PrintScreen".to_string(),
+        0x2D => "Insert".to_string(),
+        0x2E => "Delete".to_string(),
+        0x30..=0x39 | 0x41..=0x5A => char::from(key as u8).to_string(),
+        0x60..=0x69 => format!("Num{}", key - 0x60),
+        0x70..=0x87 => format!("F{}", key - 0x70 + 1),
+        0xBA => ";".to_string(),
+        0xBB => "=".to_string(),
+        0xBC => ",".to_string(),
+        0xBD => "-".to_string(),
+        0xBE => ".".to_string(),
+        0xBF => "/".to_string(),
+        0xC0 => "`".to_string(),
+        0xDB => "[".to_string(),
+        0xDC => "\\".to_string(),
+        0xDD => "]".to_string(),
+        0xDE => "'".to_string(),
+        _ => format!("Key 0x{key:02X}"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HotkeyBindings {
+    #[serde(default = "default_record_hotkey")]
+    pub record: HotkeyConfig,
+    #[serde(default = "default_snapshot_hotkey")]
+    pub snapshot: HotkeyConfig,
+    #[serde(default = "default_annotate_hotkey")]
+    pub annotate: HotkeyConfig,
+}
+
+impl Default for HotkeyBindings {
+    fn default() -> Self {
+        Self {
+            record: default_record_hotkey(),
+            snapshot: default_snapshot_hotkey(),
+            annotate: default_annotate_hotkey(),
+        }
+    }
+}
+
+impl HotkeyBindings {
+    /// 저장 전 검증: 수정자 없는 조합(일반 타이핑 가로채기)과 중복을 거부한다.
+    pub fn validate(self) -> Result<(), String> {
+        let items = [
+            ("Record GIF", self.record),
+            ("Snapshot", self.snapshot),
+            ("Annotate", self.annotate),
+        ];
+        for (name, hotkey) in items {
+            if hotkey.key == 0 {
+                return Err(format!("Enter a shortcut for {name}."));
+            }
+            if hotkey.modifiers
+                & (HOTKEY_MOD_CONTROL | HOTKEY_MOD_ALT | HOTKEY_MOD_WIN)
+                == 0
+            {
+                return Err(format!(
+                    "The shortcut for {name} ({}) must include Ctrl or Alt.",
+                    hotkey.label()
+                ));
+            }
+        }
+        for (index, (name, hotkey)) in items.iter().enumerate() {
+            if let Some((other, _)) = items[index + 1..].iter().find(|(_, o)| o == hotkey) {
+                return Err(format!(
+                    "{name} and {other} use the same shortcut ({}).",
+                    hotkey.label()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -53,7 +185,8 @@ impl ClickColor {
 
     pub fn from_hex(value: &str) -> Option<Self> {
         let hex = value.trim().trim_start_matches('#');
-        if hex.len() != 6 {
+        // 바이트 단위 슬라이싱 전에 ASCII 16진수만 허용 (비 ASCII 입력 패닉, "+1" 통과 방지)
+        if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
 
@@ -146,6 +279,15 @@ pub struct AppConfig {
     pub click_effect_kind: ClickEffectKind,
     #[serde(default)]
     pub capture_frame: Option<CaptureFrameConfig>,
+    #[serde(default = "default_gif_fps")]
+    pub gif_fps: u32,
+    /// 스냅샷을 클립보드와 함께 PNG 파일로도 저장
+    #[serde(default)]
+    pub snapshot_save_png: bool,
+    #[serde(default = "default_gif_output_path")]
+    pub snapshot_output_path: String,
+    #[serde(default)]
+    pub hotkeys: HotkeyBindings,
 }
 
 impl Default for AppConfig {
@@ -167,6 +309,10 @@ impl Default for AppConfig {
             ripple_lifetime: DEFAULT_RIPPLE_LIFETIME,
             click_effect_kind: ClickEffectKind::Ripple,
             capture_frame: None,
+            gif_fps: DEFAULT_GIF_FPS,
+            snapshot_save_png: false,
+            snapshot_output_path: default_gif_output_path(),
+            hotkeys: HotkeyBindings::default(),
         }
     }
 }
@@ -174,8 +320,15 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
-        let Ok(contents) = fs::read_to_string(&path) else {
-            return Self::default();
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                // 파일이 없는 경우 외의 읽기 실패(비 UTF-8 등)도 덮어쓰기 전에 백업한다.
+                if error.kind() != io::ErrorKind::NotFound {
+                    let _ = fs::copy(&path, path.with_extension("json.bak"));
+                }
+                return Self::default();
+            }
         };
 
         let mut config: Self = match serde_json::from_str(&contents) {
@@ -218,7 +371,28 @@ impl AppConfig {
         // 최근 색상 목록 최대 3개로 제한
         self.recent_left_colors.truncate(3);
         self.recent_right_colors.truncate(3);
+        // 선택지에 없는 FPS는 가장 가까운 값으로
+        self.gif_fps = GIF_FPS_CHOICES
+            .into_iter()
+            .min_by_key(|choice| choice.abs_diff(self.gif_fps))
+            .unwrap_or(DEFAULT_GIF_FPS);
     }
+}
+
+fn default_gif_fps() -> u32 {
+    DEFAULT_GIF_FPS
+}
+
+fn default_record_hotkey() -> HotkeyConfig {
+    HotkeyConfig::ctrl_alt_shift(0x52) // R
+}
+
+fn default_snapshot_hotkey() -> HotkeyConfig {
+    HotkeyConfig::ctrl_alt_shift(0x43) // C
+}
+
+fn default_annotate_hotkey() -> HotkeyConfig {
+    HotkeyConfig::ctrl_alt_shift(0x41) // A
 }
 
 fn default_ripple_radius() -> i32 {
@@ -274,6 +448,62 @@ mod tests {
     }
 
     #[test]
+    fn non_ascii_and_signed_hex_is_rejected_without_panic() {
+        // "가나"는 6바이트라 길이 검사만으로는 슬라이싱 패닉이 난다.
+        assert!(ClickColor::from_hex("가나").is_none());
+        assert!(ClickColor::from_hex("+1+2+3").is_none());
+    }
+
+    #[test]
+    fn gif_fps_snaps_to_nearest_choice() {
+        let mut config = AppConfig {
+            gif_fps: 0,
+            ..AppConfig::default()
+        };
+        config.clamp_values();
+        assert_eq!(config.gif_fps, 5);
+        config.gif_fps = 1000;
+        config.clamp_values();
+        assert_eq!(config.gif_fps, 20);
+        config.gif_fps = 15;
+        config.clamp_values();
+        assert_eq!(config.gif_fps, 15);
+    }
+
+    #[test]
+    fn hotkey_labels_are_readable() {
+        assert_eq!(HotkeyBindings::default().record.label(), "Ctrl+Alt+Shift+R");
+        let hotkey = HotkeyConfig {
+            modifiers: HOTKEY_MOD_WIN | HOTKEY_MOD_ALT,
+            key: 0x70,
+        };
+        assert_eq!(hotkey.label(), "Win+Alt+F1");
+    }
+
+    #[test]
+    fn hotkey_validation_rejects_bad_bindings() {
+        assert!(HotkeyBindings::default().validate().is_ok());
+
+        let mut duplicate = HotkeyBindings::default();
+        duplicate.snapshot = duplicate.record;
+        assert!(duplicate.validate().unwrap_err().contains("same shortcut"));
+
+        let mut shift_only = HotkeyBindings::default();
+        shift_only.annotate = HotkeyConfig {
+            modifiers: HOTKEY_MOD_SHIFT,
+            key: 0x41,
+        };
+        assert!(shift_only.validate().unwrap_err().contains("Ctrl or Alt"));
+
+        let mut empty = HotkeyBindings::default();
+        empty.record = HotkeyConfig {
+            modifiers: 0,
+            key: 0,
+        };
+        assert!(empty.validate().unwrap_err().contains("Enter a shortcut"));
+    }
+
+    #[test]
     fn colorref_round_trip() {
         let color = ClickColor::new(1, 2, 3);
         let back = ClickColor::from_colorref(color.to_colorref());
@@ -309,5 +539,8 @@ mod tests {
         assert_eq!(config.ripple_radius, DEFAULT_RIPPLE_RADIUS);
         assert_eq!(config.click_effect_kind, ClickEffectKind::Ripple);
         assert!(config.capture_frame.is_none());
+        assert_eq!(config.gif_fps, DEFAULT_GIF_FPS);
+        assert!(!config.snapshot_save_png);
+        assert_eq!(config.hotkeys, HotkeyBindings::default());
     }
 }

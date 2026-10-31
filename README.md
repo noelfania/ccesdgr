@@ -21,6 +21,6 @@ cargo build --release
 
 Output: `target/release/ccesdgr.exe`
 
-Tray-resident; settings / Record GIF / Snapshot / Annotate via tray menu. Hotkeys: `Ctrl+Alt+Shift+R` (record GIF: open → start → stop), `Ctrl+Alt+Shift+C` (snapshot), `Ctrl+Alt+Shift+A` (annotate; `F1` in annotate mode lists tools).
+Tray-resident; settings / Record GIF / Snapshot / Annotate via tray menu. Default hotkeys (change in Settings > Shortcuts): `Ctrl+Alt+Shift+R` (record GIF: open → start → stop), `Ctrl+Alt+Shift+C` (snapshot), `Ctrl+Alt+Shift+A` (annotate; `F1` in annotate mode lists tools).
 
 See [docs/development/local-setup.md](docs/development/local-setup.md) for Rust install details.

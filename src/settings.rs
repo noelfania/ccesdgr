@@ -30,8 +30,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config::{
-    AppConfig, ClickColor, ClickEffectKind, MAX_GIF_TIMESTAMP_FONT_SIZE, MAX_RIPPLE_LIFETIME,
-    MAX_RIPPLE_RADIUS, MIN_GIF_TIMESTAMP_FONT_SIZE, MIN_RIPPLE_LIFETIME, MIN_RIPPLE_RADIUS,
+    AppConfig, ClickColor, ClickEffectKind, HotkeyBindings, HotkeyConfig, GIF_FPS_CHOICES,
+    HOTKEY_MOD_ALT, HOTKEY_MOD_CONTROL, HOTKEY_MOD_SHIFT, MAX_GIF_TIMESTAMP_FONT_SIZE,
+    MAX_RIPPLE_LIFETIME, MAX_RIPPLE_RADIUS, MIN_GIF_TIMESTAMP_FONT_SIZE, MIN_RIPPLE_LIFETIME,
+    MIN_RIPPLE_RADIUS,
 };
 use crate::win;
 
@@ -60,12 +62,22 @@ const ID_GIF_EVEN_SIZE: i32 = 2027;
 const ID_CLICK_EFFECT_ENABLED: i32 = 2028;
 const ID_GIF_BROWSE: i32 = 2030;
 const ID_OPEN_CONFIG_DIR: i32 = 2031;
+const ID_GIF_FPS: i32 = 2032;
+const ID_SNAPSHOT_SAVE_PNG: i32 = 2033;
+const ID_SNAPSHOT_PATH: i32 = 2034;
+const ID_SNAPSHOT_BROWSE: i32 = 2035;
+const ID_HOTKEY_RECORD: i32 = 2036;
+const ID_HOTKEY_SNAPSHOT: i32 = 2037;
+const ID_HOTKEY_ANNOTATE: i32 = 2038;
+const ID_HOTKEY_DEFAULTS: i32 = 2039;
 // 최근 색상 스와치 (각 색상 타입별 3개)
 const ID_SWATCH_LEFT_0: i32 = 2020;
 const ID_SWATCH_RIGHT_0: i32 = 2023;
 const ID_NAV_GENERAL: i32 = 2101;
 const ID_NAV_MOUSE: i32 = 2102;
 const ID_NAV_INFO: i32 = 2103;
+const ID_NAV_SNAPSHOT: i32 = 2104;
+const ID_NAV_SHORTCUTS: i32 = 2105;
 
 // 트랙바 메시지 상수 (WM_USER 기반)
 const TBM_GETPOS: u32 = 0x0400;
@@ -77,9 +89,19 @@ const CB_SETCURSEL: u32 = 0x014E;
 const CB_GETCURSEL: u32 = 0x0147;
 const CBS_DROPDOWNLIST: WINDOW_STYLE = 3;
 
+// 단축키 입력 컨트롤 (msctls_hotkey32)
+const HKM_SETHOTKEY: u32 = 0x0401;
+const HKM_GETHOTKEY: u32 = 0x0402;
+const HOTKEYF_SHIFT: u32 = 0x01;
+const HOTKEYF_CONTROL: u32 = 0x02;
+const HOTKEYF_ALT: u32 = 0x04;
+const HOTKEYF_EXT: u32 = 0x08;
+
 const PAGE_GENERAL: i32 = 1;
 const PAGE_MOUSE: i32 = 2;
 const PAGE_INFO: i32 = 3;
+const PAGE_SNAPSHOT: i32 = 4;
+const PAGE_SHORTCUTS: i32 = 5;
 
 // 96 DPI 기준 클라이언트 크기 / 하단 버튼 바 위치
 const CLIENT_W: i32 = 600;
@@ -101,6 +123,30 @@ static UI_FONT: AtomicIsize = AtomicIsize::new(0);
 /// 열려 있는 설정 창 (메시지 루프의 IsDialogMessageW용)
 pub fn window() -> HWND {
     SETTINGS_HWND.load(Ordering::Relaxed) as HWND
+}
+
+/// 설정 창이 열린 동안 트레이에서 바꾼 Click Effects 값을 창에도 반영한다.
+pub fn sync_click_effect_toggle(enabled: bool) {
+    let Some(hwnd) = active_window() else {
+        return;
+    };
+    if let Some(config) = CURRENT_CONFIG
+        .lock()
+        .expect("settings mutex poisoned")
+        .as_mut()
+    {
+        config.click_effect_enabled = enabled;
+    }
+    unsafe {
+        if !GetDlgItem(hwnd, ID_CLICK_EFFECT_ENABLED).is_null() {
+            CheckDlgButton(
+                hwnd,
+                ID_CLICK_EFFECT_ENABLED,
+                if enabled { BST_CHECKED } else { BST_UNCHECKED },
+            );
+            update_dependent_controls(hwnd);
+        }
+    }
 }
 
 pub fn show(owner: HWND, config: &AppConfig) {
@@ -221,6 +267,26 @@ unsafe extern "system" fn settings_proc(
                     show_page(hwnd, PAGE_INFO);
                     0
                 }
+                ID_NAV_SNAPSHOT => {
+                    show_page(hwnd, PAGE_SNAPSHOT);
+                    0
+                }
+                ID_NAV_SHORTCUTS => {
+                    show_page(hwnd, PAGE_SHORTCUTS);
+                    0
+                }
+                ID_HOTKEY_DEFAULTS => {
+                    set_hotkey_controls(hwnd, &HotkeyBindings::default());
+                    0
+                }
+                ID_SNAPSHOT_BROWSE => {
+                    if let Some(folder) =
+                        win::browse_folder_dialog(hwnd, "Choose the snapshot folder")
+                    {
+                        set_control_text(hwnd, ID_SNAPSHOT_PATH, &folder.to_string_lossy());
+                    }
+                    0
+                }
                 ID_LEFT_COLOR => {
                     if !sync_current_page(hwnd) {
                         return 0;
@@ -297,6 +363,8 @@ unsafe extern "system" fn settings_proc(
                 SetFocus(owner);
             }
             *CURRENT_CONFIG.lock().expect("settings mutex poisoned") = None;
+            // Shortcuts 페이지에서 해제한 전역 단축키 복원
+            crate::set_hotkeys_suspended(false);
             CONTENT_CONTROLS
                 .lock()
                 .expect("settings controls mutex poisoned")
@@ -341,7 +409,9 @@ unsafe fn create_frame_controls(hwnd: HWND) {
     for control in [
         button(hwnd, ID_NAV_GENERAL, "General", 16, 14, 80, 28, false),
         button(hwnd, ID_NAV_MOUSE, "Mouse", 96, 14, 80, 28, false),
-        button(hwnd, ID_NAV_INFO, "Info", 176, 14, 80, 28, false),
+        button(hwnd, ID_NAV_SNAPSHOT, "Snapshot", 176, 14, 80, 28, false),
+        button(hwnd, ID_NAV_SHORTCUTS, "Shortcuts", 256, 14, 80, 28, false),
+        button(hwnd, ID_NAV_INFO, "Info", 336, 14, 80, 28, false),
         button(hwnd, ID_RESET, "Reset", 16, y, 86, 28, false),
         button(hwnd, ID_CONFIRM, "OK", 334, y, 78, 28, true),
         button(hwnd, ID_CANCEL, "Cancel", 420, y, 78, 28, false),
@@ -422,7 +492,10 @@ unsafe fn apply_settings_from_window(hwnd: HWND) -> bool {
         return false;
     };
 
-    if !ensure_gif_folder(hwnd, &config.gif_output_path) {
+    if !ensure_folder(hwnd, "GIF output", &config.gif_output_path) {
+        return false;
+    }
+    if config.snapshot_save_png && !ensure_folder(hwnd, "snapshot", &config.snapshot_output_path) {
         return false;
     }
 
@@ -434,15 +507,15 @@ unsafe fn apply_settings_from_window(hwnd: HWND) -> bool {
     true
 }
 
-/// GIF 저장 폴더가 없으면 생성 여부를 묻는다. 저장을 계속해도 되면 true.
-unsafe fn ensure_gif_folder(hwnd: HWND, path: &str) -> bool {
+/// 저장 폴더가 없으면 생성 여부를 묻는다. 저장을 계속해도 되면 true.
+unsafe fn ensure_folder(hwnd: HWND, label: &str, path: &str) -> bool {
     let folder = std::path::Path::new(path);
     if folder.is_dir() {
         return true;
     }
     let title = win::to_wide("GMTL Mouse Click Settings");
     let message = win::to_wide(&format!(
-        "The GIF output folder does not exist:\n{path}\n\nCreate it?"
+        "The {label} folder does not exist:\n{path}\n\nCreate it?"
     ));
     if MessageBoxW(
         hwnd,
@@ -540,8 +613,13 @@ unsafe fn render_page(hwnd: HWND, page: i32) {
     *CURRENT_PAGE.lock().expect("settings page mutex poisoned") = page;
     clear_content_controls(hwnd);
 
+    // 등록된 조합은 입력 컨트롤에 전달되지 않으므로 이 페이지에서만 해제한다.
+    crate::set_hotkeys_suspended(page == PAGE_SHORTCUTS);
+
     match page {
         PAGE_MOUSE => create_mouse_page(hwnd),
+        PAGE_SNAPSHOT => create_snapshot_page(hwnd),
+        PAGE_SHORTCUTS => create_shortcuts_page(hwnd),
         PAGE_INFO => create_info_page(hwnd),
         _ => create_general_page(hwnd),
     }
@@ -580,6 +658,16 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                 config.show_gif_timestamp =
                     IsDlgButtonChecked(hwnd, ID_GIF_TIMESTAMP) == BST_CHECKED;
                 config.gif_even_size = IsDlgButtonChecked(hwnd, ID_GIF_EVEN_SIZE) == BST_CHECKED;
+                let fps_combo = GetDlgItem(hwnd, ID_GIF_FPS);
+                if !fps_combo.is_null() {
+                    let index = SendMessageW(fps_combo, CB_GETCURSEL, 0, 0);
+                    if let Some(fps) = usize::try_from(index)
+                        .ok()
+                        .and_then(|index| GIF_FPS_CHOICES.get(index))
+                    {
+                        config.gif_fps = *fps;
+                    }
+                }
                 if let Ok(size) = control_text(hwnd, ID_GIF_TIMESTAMP_SIZE)
                     .trim()
                     .parse::<i32>()
@@ -639,6 +727,21 @@ unsafe fn sync_current_page(hwnd: HWND) -> bool {
                         config.ripple_lifetime = lifetime_from_speed(slider_pos);
                     }
                 }
+            }
+            PAGE_SNAPSHOT => {
+                config.snapshot_save_png =
+                    IsDlgButtonChecked(hwnd, ID_SNAPSHOT_SAVE_PNG) == BST_CHECKED;
+                let path = control_text(hwnd, ID_SNAPSHOT_PATH);
+                if !path.is_empty() {
+                    config.snapshot_output_path = path;
+                }
+            }
+            PAGE_SHORTCUTS => {
+                config.hotkeys = HotkeyBindings {
+                    record: read_hotkey_control(hwnd, ID_HOTKEY_RECORD),
+                    snapshot: read_hotkey_control(hwnd, ID_HOTKEY_SNAPSHOT),
+                    annotate: read_hotkey_control(hwnd, ID_HOTKEY_ANNOTATE),
+                };
             }
             _ => {}
         }
@@ -730,6 +833,180 @@ unsafe fn create_general_page(hwnd: HWND) {
         328,
         config.gif_even_size,
     );
+
+    content_label(hwnd, "GIF frame rate", 36, 366, 130, 20);
+    let fps_combo = content_combo(hwnd, ID_GIF_FPS, 180, 362, 90, 200);
+    for fps in GIF_FPS_CHOICES {
+        combo_add(fps_combo, &format!("{fps} FPS"));
+    }
+    let fps_index = GIF_FPS_CHOICES
+        .iter()
+        .position(|fps| *fps == config.gif_fps)
+        .unwrap_or(1);
+    SendMessageW(fps_combo, CB_SETCURSEL, fps_index, 0);
+    content_label(hwnd, "Higher is smoother, but larger files.", 282, 366, 280, 20);
+}
+
+unsafe fn create_snapshot_page(hwnd: HWND) {
+    let config = CURRENT_CONFIG
+        .lock()
+        .expect("settings mutex poisoned")
+        .clone()
+        .unwrap_or_default();
+
+    content_group_box(hwnd, "Snapshot Settings", 16, 52, 568, 360);
+    labeled_checkbox(
+        hwnd,
+        ID_SNAPSHOT_SAVE_PNG,
+        "Also save snapshots as PNG files",
+        36,
+        80,
+        config.snapshot_save_png,
+    );
+    content_label(
+        hwnd,
+        "Snapshots are always copied to the clipboard.",
+        54,
+        104,
+        480,
+        20,
+    );
+    content_label(hwnd, "PNG folder", 36, 140, 200, 20);
+    content_edit(
+        hwnd,
+        ID_SNAPSHOT_PATH,
+        &config.snapshot_output_path,
+        36,
+        163,
+        440,
+        24,
+    );
+    content_button(hwnd, ID_SNAPSHOT_BROWSE, "Browse...", 484, 162, 84, 26, false);
+    content_label(
+        hwnd,
+        "Ctrl+S in annotation mode saves to this folder too.",
+        36,
+        198,
+        500,
+        20,
+    );
+}
+
+unsafe fn create_shortcuts_page(hwnd: HWND) {
+    let config = CURRENT_CONFIG
+        .lock()
+        .expect("settings mutex poisoned")
+        .clone()
+        .unwrap_or_default();
+
+    content_group_box(hwnd, "Global Shortcuts", 16, 52, 568, 360);
+    content_label(
+        hwnd,
+        "Click a box and press the new key combination. Include Ctrl or Alt.",
+        36,
+        80,
+        530,
+        20,
+    );
+    for (label, id, y) in [
+        ("Record GIF (start / stop)", ID_HOTKEY_RECORD, 116),
+        ("Snapshot", ID_HOTKEY_SNAPSHOT, 156),
+        ("Annotate screen (toggle)", ID_HOTKEY_ANNOTATE, 196),
+    ] {
+        content_label(hwnd, label, 36, y + 3, 190, 20);
+        let control = child(
+            hwnd,
+            "msctls_hotkey32",
+            "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0,
+            240,
+            y,
+            220,
+            24,
+            id,
+        );
+        remember_content(control);
+    }
+    set_hotkey_controls(hwnd, &config.hotkeys);
+    content_button(
+        hwnd,
+        ID_HOTKEY_DEFAULTS,
+        "Restore Defaults",
+        240,
+        240,
+        130,
+        28,
+        false,
+    );
+    content_label(
+        hwnd,
+        "Shortcuts are paused while this page is open, and take effect on OK or Apply.",
+        36,
+        290,
+        530,
+        20,
+    );
+}
+
+unsafe fn set_hotkey_controls(hwnd: HWND, hotkeys: &HotkeyBindings) {
+    for (id, hotkey) in [
+        (ID_HOTKEY_RECORD, hotkeys.record),
+        (ID_HOTKEY_SNAPSHOT, hotkeys.snapshot),
+        (ID_HOTKEY_ANNOTATE, hotkeys.annotate),
+    ] {
+        let control = GetDlgItem(hwnd, id);
+        if !control.is_null() {
+            SendMessageW(control, HKM_SETHOTKEY, hotkey_to_control_value(hotkey), 0);
+        }
+    }
+}
+
+unsafe fn read_hotkey_control(hwnd: HWND, id: i32) -> HotkeyConfig {
+    let control = GetDlgItem(hwnd, id);
+    let value = if control.is_null() {
+        0
+    } else {
+        SendMessageW(control, HKM_GETHOTKEY, 0, 0) as usize
+    };
+    hotkey_from_control_value(value)
+}
+
+/// 입력 컨트롤 값: 하위 바이트 = 가상 키, 상위 바이트 = HOTKEYF_*
+fn hotkey_to_control_value(hotkey: HotkeyConfig) -> usize {
+    let mut flags = 0;
+    if hotkey.modifiers & HOTKEY_MOD_SHIFT != 0 {
+        flags |= HOTKEYF_SHIFT;
+    }
+    if hotkey.modifiers & HOTKEY_MOD_CONTROL != 0 {
+        flags |= HOTKEYF_CONTROL;
+    }
+    if hotkey.modifiers & HOTKEY_MOD_ALT != 0 {
+        flags |= HOTKEYF_ALT;
+    }
+    // 방향키·탐색 키는 확장 키로 표시해야 이름이 맞게 나온다.
+    if (0x21..=0x2E).contains(&hotkey.key) {
+        flags |= HOTKEYF_EXT;
+    }
+    (hotkey.key as usize & 0xff) | ((flags as usize) << 8)
+}
+
+fn hotkey_from_control_value(value: usize) -> HotkeyConfig {
+    let flags = (value >> 8) as u32 & 0xff;
+    let mut modifiers = 0;
+    if flags & HOTKEYF_SHIFT != 0 {
+        modifiers |= HOTKEY_MOD_SHIFT;
+    }
+    if flags & HOTKEYF_CONTROL != 0 {
+        modifiers |= HOTKEY_MOD_CONTROL;
+    }
+    if flags & HOTKEYF_ALT != 0 {
+        modifiers |= HOTKEY_MOD_ALT;
+    }
+    HotkeyConfig {
+        modifiers,
+        key: value as u32 & 0xff,
+    }
 }
 
 unsafe fn create_mouse_page(hwnd: HWND) {
@@ -858,6 +1135,13 @@ unsafe fn create_mouse_page(hwnd: HWND) {
 }
 
 unsafe fn create_info_page(hwnd: HWND) {
+    let hotkeys = CURRENT_CONFIG
+        .lock()
+        .expect("settings mutex poisoned")
+        .as_ref()
+        .map(|config| config.hotkeys)
+        .unwrap_or_default();
+
     content_group_box(hwnd, "About", 16, 52, 568, 360);
     content_label(
         hwnd,
@@ -878,9 +1162,9 @@ unsafe fn create_info_page(hwnd: HWND) {
 
     content_label(hwnd, "Global shortcuts", 36, 132, 300, 20);
     for (index, line) in [
-        "Ctrl+Alt+Shift+R  —  Record GIF (start / stop)",
-        "Ctrl+Alt+Shift+C  —  Snapshot to clipboard",
-        "Ctrl+Alt+Shift+A  —  Annotate screen (toggle)",
+        format!("{}  —  Record GIF (start / stop)", hotkeys.record.label()),
+        format!("{}  —  Snapshot to clipboard", hotkeys.snapshot.label()),
+        format!("{}  —  Annotate screen (toggle)", hotkeys.annotate.label()),
     ]
     .iter()
     .enumerate()
@@ -892,7 +1176,8 @@ unsafe fn create_info_page(hwnd: HWND) {
     for (index, line) in [
         "Drag: pen  ·  Ctrl: line  ·  Shift: rectangle  ·  Tab: ellipse  ·  Ctrl+Shift: arrow",
         "X + drag: blur  ·  Right-drag: erase  ·  Ctrl+Wheel: pen width  ·  Ctrl+Z: undo",
-        "R G B Y O P W K: color (Shift = highlighter)  ·  Ctrl+C: copy  ·  F1: help  ·  Esc: exit",
+        "R G B Y O P W K: color (Shift = highlighter)",
+        "Ctrl+C: copy  ·  Ctrl+S: save PNG  ·  F1: help  ·  Esc: exit",
     ]
     .iter()
     .enumerate()
@@ -1357,6 +1642,23 @@ fn active_window() -> Option<HWND> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkey_control_value_round_trips() {
+        for hotkey in [
+            HotkeyBindings::default().record,
+            HotkeyConfig {
+                modifiers: HOTKEY_MOD_CONTROL,
+                key: 0x2E, // Delete: 확장 키 플래그가 붙어도 조합은 같아야 한다
+            },
+        ] {
+            assert_eq!(
+                hotkey_from_control_value(hotkey_to_control_value(hotkey)),
+                hotkey
+            );
+        }
+        assert_eq!(hotkey_from_control_value(0).key, 0);
+    }
 
     #[test]
     fn speed_and_lifetime_are_inverse() {

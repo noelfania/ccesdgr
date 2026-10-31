@@ -36,7 +36,7 @@ alwaysApply: true
 - 저수준 마우스 훅 기반 클릭 위치 피드백(레이어드 오버레이)
 - 설정 영속화(JSON), Windows 시작 프로그램(레지스트리 Run) 옵션
 - 영역 GIF 녹화, 영역 스냅샷(클립보드 비트맵), 전체 화면 주석(드로우) 오버레이
-- 글로벌 핫키: `Ctrl+Alt+Shift+C`(스냅샷), `Ctrl+Alt+Shift+A`(주석)
+- 글로벌 핫키(설정에서 변경 가능): 기본 `Ctrl+Alt+Shift+R`(GIF 녹화), `Ctrl+Alt+Shift+C`(스냅샷), `Ctrl+Alt+Shift+A`(주석)
 
 **Out-of-Scope (제외)**
 
@@ -55,7 +55,8 @@ alwaysApply: true
 | 언어 | Rust | edition 2021 | 패키지 버전은 저장소 루트 [Cargo.toml](Cargo.toml) 기준 |
 | Win32 바인딩 | windows-sys | 0.61.x | FFI 직접 호출 |
 | 직렬화 | serde, serde_json | 1.x | 설정 파일 `config.json` (`%APPDATA%\GMTL Mouse Click\`) |
-| GIF 인코딩 | gif | 0.13 | 화면 녹화 출력(~10 FPS) |
+| GIF 인코딩 | gif | 0.13 | 화면 녹화 출력(5~20 FPS, 기본 10) |
+| PNG 인코딩 | png | 0.18 | 스냅샷·주석 파일 저장 |
 | 리소스 | winresource | 0.1.x | 아이콘·매니페스트 등(빌드 의존성) |
 
 ### 2.2 시스템 아키텍처
@@ -70,7 +71,7 @@ alwaysApply: true
 
 - 마우스 클릭 위치에 시각적 피드백 표시(설정에서 끄기·스타일 변경 가능)
 - GIF 화면 녹화(선택 영역, `capture_frame` 기억, 선택적 Save As)
-- 영역 스냅샷 → 클립보드(CF_BITMAP)
+- 영역 스냅샷 → 클립보드(CF_BITMAP), 선택적 PNG 저장
 - 화면 주석(드로우 오버레이, 펜 커서)
 - 설정 창에서 시작 프로그램·색·효과·GIF 옵션 등 관리
 - 트레이 메뉴 및 글로벌 핫키로 스냅샷·주석 실행
